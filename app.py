@@ -42,39 +42,43 @@ def smart_column_lookup(df, guessed_name):
     matches = difflib.get_close_matches(guessed_name, df.columns, n=1, cutoff=0.5)
     return matches[0] if matches else guessed_name
 
+# ... keep your imports ...
+
+# --- NEW: Add caching to speed up the app ---
+@st.cache_data
 def load_and_combine_data(uploaded_files):
-    """
-    Reads multiple files (CSV or Excel). 
-    If Excel, it iterates through ALL sheets and combines them.
-    """
     all_dfs = []
     
     for file in uploaded_files:
         try:
             file_ext = file.name.split('.')[-1].lower()
             
-            # --- CASE A: EXCEL FILE (Multiple Sheets) ---
+            # Helper to process each dataframe before adding to list
+            def process_df(df_temp, source_name):
+                # 1. Force "Cons No." to be string to fix ArrowInvalid error
+                if 'Cons No.' in df_temp.columns:
+                    df_temp['Cons No.'] = df_temp['Cons No.'].astype(str)
+                
+                # 2. Ensure Year exists
+                if 'Year' not in df_temp.columns:
+                    try:
+                        year_match = re.search(r'\d{4}', str(source_name))
+                        df_temp['Year'] = int(year_match.group(0)) if year_match else source_name
+                    except:
+                        df_temp['Year'] = source_name
+                return df_temp
+
+            # --- CASE A: EXCEL ---
             if file_ext in ['xlsx', 'xls']:
                 xls_dict = pd.read_excel(file, sheet_name=None)
                 for sheet_name, df in xls_dict.items():
-                    if 'Year' not in df.columns:
-                        try:
-                            year_match = re.search(r'\d{4}', str(sheet_name))
-                            df['Year'] = int(year_match.group(0)) if year_match else sheet_name
-                        except:
-                            df['Year'] = sheet_name
+                    df = process_df(df, sheet_name)
                     all_dfs.append(df)
                     
-            # --- CASE B: CSV FILE (Single Sheet) ---
+            # --- CASE B: CSV ---
             elif file_ext == 'csv':
                 df = pd.read_csv(file)
-                if 'Year' not in df.columns:
-                    try:
-                        year_match = re.search(r'\d{4}', file.name)
-                        if year_match:
-                            df['Year'] = int(year_match.group(0))
-                    except:
-                        pass
+                df = process_df(df, file.name)
                 all_dfs.append(df)
                 
         except Exception as e:
