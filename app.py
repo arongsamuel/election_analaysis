@@ -13,9 +13,16 @@ import re
 st.set_page_config(page_title="Election Trends & AI Analyst", layout="wide")
 
 # API Key Input
+# Automatically fetch API Key from secrets
+if "GEMINI_API_KEY" in st.secrets:
+    api_key = st.secrets["GEMINI_API_KEY"]
+else:
+    # Fallback if secret isn't found (useful for first-time setup)
+    with st.sidebar:
+        st.warning("API Key not found in secrets. Please enter it below:")
+        api_key = st.text_input("Gemini API Key", type="password")
 with st.sidebar:
     st.header("⚙️ Configuration")
-    api_key = st.text_input("Gemini API Key", type="password")
     st.divider()
     st.info("Upload Excel (.xlsx) files with multiple sheets or individual CSVs.")
 
