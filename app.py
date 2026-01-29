@@ -130,7 +130,7 @@ def query_gemini_smart(query, dataframe):
     {query}
     """
     
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash-lite')
     
     for attempt in range(3):
         try:
