@@ -281,24 +281,53 @@ if uploaded_files:
         # --- B. SIDEBAR FILTERS ---
         st.sidebar.header("🔍 Global Filters")
         
-        # Year Filter
+        # 1. Year Filter
         try:
+            # Ensure Year is numeric
             master_df['Year'] = pd.to_numeric(master_df['Year'])
             min_year, max_year = int(master_df['Year'].min()), int(master_df['Year'].max())
             selected_years = st.sidebar.slider("Year Range", min_year, max_year, (min_year, max_year))
+            
+            # Apply Year Filter
             df_filtered = master_df[(master_df['Year'] >= selected_years[0]) & (master_df['Year'] <= selected_years[1])]
         except:
             st.sidebar.warning("Year column issue. Showing all data.")
             df_filtered = master_df
 
-        # Party Filter
-        party_col = smart_column_lookup(df_filtered, "Party")
-        if party_col:
-            parties = sorted(df_filtered[party_col].astype(str).unique())
+        # 2. District Filter (NEW)
+        # We try to find a column named 'District' or similar
+        dist_col = smart_column_lookup(df_filtered, "District")
+        if dist_col in df_filtered.columns:
+            # Get unique districts, sorted
+            districts = sorted(df_filtered[dist_col].dropna().astype(str).unique())
+            selected_districts = st.sidebar.multiselect("Filter Districts", options=districts)
+            
+            if selected_districts:
+                df_filtered = df_filtered[df_filtered[dist_col].isin(selected_districts)]
+
+        # 3. Constituency Filter (NEW)
+        # We try to find 'Constituency Name', 'Cons Name', etc.
+        cons_col = smart_column_lookup(df_filtered, "Constituency Name")
+        if cons_col in df_filtered.columns:
+            # Get unique constituencies (respecting the District filter above!)
+            constituencies = sorted(df_filtered[cons_col].dropna().astype(str).unique())
+            selected_cons = st.sidebar.multiselect("Filter Constituencies", options=constituencies)
+            
+            if selected_cons:
+                df_filtered = df_filtered[df_filtered[cons_col].isin(selected_cons)]
+
+        # 4. Party Filter (Existing)
+        party_col = smart_column_lookup(df_filtered, "Party") # or "Win Party"
+        if party_col in df_filtered.columns:
+            parties = sorted(df_filtered[party_col].dropna().astype(str).unique())
             selected_parties = st.sidebar.multiselect("Filter Parties", options=parties)
+            
             if selected_parties:
                 df_filtered = df_filtered[df_filtered[party_col].isin(selected_parties)]
-
+                
+        # Show current row count
+        st.sidebar.caption(f"Showing {len(df_filtered)} rows")
+        
         # --- C. TABS ---
         # ==========================================
         # 2. NEW: INTERACTIVE DATA EDITOR
