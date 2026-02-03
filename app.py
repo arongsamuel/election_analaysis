@@ -308,29 +308,37 @@ if uploaded_files:
         with tab_trends:
             st.subheader("Quick Trends")
             
-            # --- FIX: Dynamically combine Default Metrics + Custom Metrics ---
+            # 1. Dynamic Metric List
             default_metrics = ["Votes", "Margin", "Electors"]
-            
-            # Add custom metric names if they exist in session state
             custom_keys = list(st.session_state.custom_metrics.keys()) if "custom_metrics" in st.session_state else []
-            
-            # Combine unique options
             available_metrics = list(set(default_metrics + custom_keys))
             
-            col_x, col_y = st.columns(2)
+            # 2. Controls Layout
+            col_x, col_y, col_z = st.columns(3) # <--- Changed to 3 columns
+            
             with col_x:
-                # Use the dynamic list here instead of the hardcoded one
                 metric = st.selectbox("Metric", available_metrics, index=0)
             with col_y:
                 split_by = st.selectbox("Split By", ["Party", "Alliance", "None"], index=0)
+            with col_z:
+                # <--- NEW: Aggregation Selector
+                agg_type = st.selectbox("Aggregation", ["Sum (Total)", "Average", "Maximum", "Minimum", "Count"], index=0)
+
+            # Map selection to pandas function strings
+            agg_map = {
+                "Sum (Total)": "sum",
+                "Average": "mean",
+                "Maximum": "max",
+                "Minimum": "min",
+                "Count": "count"
+            }
             
             metric_col = smart_column_lookup(df_filtered, metric)
             year_col = smart_column_lookup(df_filtered, "Year")
             
             if metric_col and year_col:
                 try:
-                    # Ensure the metric column is numeric (Crucial for custom metrics!)
-                    # Custom metrics might be "object" type initially, forcing conversion prevents crash
+                    # Force numeric (Crucial for custom metrics)
                     df_filtered[metric_col] = pd.to_numeric(df_filtered[metric_col], errors='coerce')
                     
                     group_cols = [year_col]
@@ -338,8 +346,9 @@ if uploaded_files:
                         split_col = smart_column_lookup(df_filtered, split_by)
                         group_cols.append(split_col)
                     
-                    # Group and Sum
-                    chart_data = df_filtered.groupby(group_cols)[metric_col].sum().reset_index()
+                    # 3. Dynamic Aggregation
+                    # We use agg_map[agg_type] to get 'sum', 'mean', etc.
+                    chart_data = df_filtered.groupby(group_cols)[metric_col].agg(agg_map[agg_type]).reset_index()
                     
                     fig, ax = plt.subplots(figsize=(10, 5))
                     
@@ -349,11 +358,11 @@ if uploaded_files:
                         sns.lineplot(data=chart_data, x=year_col, y=metric_col, marker="o", ax=ax)
                     
                     plt.grid(True, alpha=0.3)
-                    plt.title(f"{metric} over Time") # Added title for clarity
+                    plt.title(f"{agg_type} of {metric} over Time")
                     st.pyplot(fig)
+                    
                 except Exception as e:
-                    st.warning(f"Could not plot '{metric}': {e}. \nTip: Ensure your custom metric results in numbers, not text.")
-
+                    st.warning(f"Could not plot: {e}")
         # TAB 2: AI ANALYST (UPDATED)
         with tab_ai:
             st.markdown("### 🤖 Ask questions in plain English")
