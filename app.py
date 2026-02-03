@@ -330,7 +330,7 @@ if uploaded_files:
         # ==========================================
         # TABS (Updated to use 'df_edited')
         # ==========================================
-        tab_trends, tab_ai, tab_data = st.tabs(["📈 Dashboard", "🤖 AI Analyst", "📋 Data Stats"])
+        tab_trends, tab_compare, tab_ai, tab_data = st.tabs(["📈 Dashboard", "⚔️ Compare Years", "🤖 AI Analyst", "📋 Data Stats"])
 
         # TAB 1: VISUAL TRENDS
         with tab_trends:
@@ -418,7 +418,81 @@ if uploaded_files:
             else:
                 st.info("Select a metric.")
 
-        # TAB 2: AI ANALYST (Updated to use df_edited)
+        # ==========================================
+        # NEW TAB 2: DATA COMPARISON (The Swing Analyzer)
+        # ==========================================
+        with tab_compare:
+            st.subheader("⚔️ Election Comparison Engine")
+            
+            # 1. Select Years to Compare
+            years_available = sorted(df_edited['Year'].unique())
+            
+            if len(years_available) < 2:
+                st.warning("⚠️ You need at least 2 different years/files to compare. Please upload more data.")
+            else:
+                c1, c2 = st.columns(2)
+                with c1:
+                    year_a = st.selectbox("Baseline Year (e.g., 2016)", years_available, index=0)
+                with c2:
+                    # Default to the last year in the list
+                    year_b = st.selectbox("Target Year (e.g., 2021)", years_available, index=len(years_available)-1)
+                
+                if year_a == year_b:
+                    st.error("Please select two different years to compare.")
+                else:
+                    # 2. Filter Data
+                    df_a = df_edited[df_edited['Year'] == year_a].copy()
+                    df_b = df_edited[df_edited['Year'] == year_b].copy()
+                    
+                    # 3. High-Level Stats Comparison
+                    st.markdown(f"### 📊 Head-to-Head: {year_a} vs {year_b}")
+                    
+                    # Calculate Totals
+                    votes_a = pd.to_numeric(df_a[smart_column_lookup(df_a, 'Votes Polled')], errors='coerce').sum()
+                    votes_b = pd.to_numeric(df_b[smart_column_lookup(df_b, 'Votes Polled')], errors='coerce').sum()
+                    
+                    # Display Metrics
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric(f"Total Votes ({year_a})", f"{votes_a:,.0f}")
+                    m2.metric(f"Total Votes ({year_b})", f"{votes_b:,.0f}")
+                    m3.metric("Growth / Decline", f"{votes_b - votes_a:,.0f}", delta_color="normal")
+                    
+                    st.divider()
+
+                    # 4. Seat Flipper Analysis (Who stole whose seats?)
+                    st.markdown("#### 🔄 Constituency Flippers (Seats that changed parties)")
+                    
+                    # We need to merge df_a and df_b on Constituency Name to compare
+                    cons_col = smart_column_lookup(df_edited, "Constituency Name")
+                    party_col = smart_column_lookup(df_edited, "Win Party") # Or "Party" depending on data structure
+                    
+                    if cons_col and party_col:
+                        # Prepare simplified dataframes
+                        merge_a = df_a[[cons_col, party_col]].rename(columns={party_col: f"Winner_{year_a}"})
+                        merge_b = df_b[[cons_col, party_col]].rename(columns={party_col: f"Winner_{year_b}"})
+                        
+                        # Merge on Constituency Name
+                        comparison_df = pd.merge(merge_a, merge_b, on=cons_col, how="inner")
+                        
+                        # Find Flippers (Where Winner A != Winner B)
+                        flippers = comparison_df[comparison_df[f"Winner_{year_a}"] != comparison_df[f"Winner_{year_b}"]]
+                        
+                        st.write(f"**{len(flippers)} constituencies changed hands.**")
+                        st.dataframe(flippers, use_container_width=True)
+                        
+                        # Visual: Who gained the most?
+                        gainers = flippers[f"Winner_{year_b}"].value_counts().reset_index()
+                        gainers.columns = ["Party", "Seats Gained"]
+                        
+                        fig_flip, ax_flip = plt.subplots(figsize=(8, 4))
+                        sns.barplot(data=gainers, x="Seats Gained", y="Party", palette="magma", ax=ax_flip)
+                        plt.title(f"Parties gaining seats in {year_b} (from rivals)")
+                        st.pyplot(fig_flip)
+
+                    else:
+                        st.warning("Could not identify 'Constituency' or 'Winner' columns to calculate flips.")
+
+        # TAB 3: AI ANALYST (Updated to use df_edited)
         with tab_ai:
             st.markdown("### 🤖 Ask questions about your data (including edits)")
             
@@ -454,7 +528,7 @@ if uploaded_files:
                         with st.expander("🔎 View Python Logic"):
                             st.code(code, language="python")
 
-        # TAB 3: DATA STATS (Formerly 'Raw Data')
+        # TAB 4: DATA STATS (Formerly 'Raw Data')
         with tab_data:
             st.info("The detailed raw data is available in the 'View & Edit' section above.")
             st.write("**Dataset Statistics:**")
