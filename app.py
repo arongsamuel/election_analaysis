@@ -277,8 +277,6 @@ if uploaded_files:
         # END OF CUSTOM METRICS SECTION
         # ==========================================
 
-        # --- B. SIDEBAR FILTERS (Existing Code) ---
-        st.sidebar.header("🔍 Global Filters")
         # ... (Rest of your code continues here)
         # --- B. SIDEBAR FILTERS ---
         st.sidebar.header("🔍 Global Filters")
@@ -422,7 +420,7 @@ if uploaded_files:
         # NEW TAB 2: DATA COMPARISON (The Swing Analyzer)
         # ==========================================
         with tab_compare:
-            st.subheader("⚔️ Election Comparison Engine")
+            st.subheader("⚔️ Election Comparison Engine (Swing Analyzer)")
             
             # 1. Select Years to Compare
             years_available = sorted(df_edited['Year'].unique())
@@ -432,10 +430,10 @@ if uploaded_files:
             else:
                 c1, c2 = st.columns(2)
                 with c1:
-                    year_a = st.selectbox("Baseline Year (e.g., 2016)", years_available, index=0)
+                    year_a = int(st.selectbox("Baseline Year (e.g., 2016)", years_available, index=0))
                 with c2:
                     # Default to the last year in the list
-                    year_b = st.selectbox("Target Year (e.g., 2021)", years_available, index=len(years_available)-1)
+                    year_b = int(st.selectbox("Target Year (e.g., 2021)", years_available, index=len(years_available)-1))
                 
                 if year_a == year_b:
                     st.error("Please select two different years to compare.")
