@@ -306,63 +306,101 @@ if uploaded_files:
 
         # TAB 1: VISUAL TRENDS
         with tab_trends:
-            st.subheader("Quick Trends")
+            st.subheader("Visual Analysis")
             
-            # 1. Dynamic Metric List
+            # 1. Setup Data Options
             default_metrics = ["Votes", "Margin", "Electors"]
             custom_keys = list(st.session_state.custom_metrics.keys()) if "custom_metrics" in st.session_state else []
             available_metrics = list(set(default_metrics + custom_keys))
             
-            # 2. Controls Layout
-            col_x, col_y, col_z = st.columns(3) # <--- Changed to 3 columns
-            
-            with col_x:
+            # 2. Control Panel
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                chart_type = st.selectbox("Chart Type", ["Line (Time Series)", "Bar (Comparison)", "Pie (Share)", "Box (Distribution)"])
+            with c2:
                 metric = st.selectbox("Metric", available_metrics, index=0)
-            with col_y:
-                split_by = st.selectbox("Split By", ["Party", "Alliance", "None"], index=0)
-            with col_z:
-                # <--- NEW: Aggregation Selector
-                agg_type = st.selectbox("Aggregation", ["Sum (Total)", "Average", "Maximum", "Minimum", "Count"], index=0)
+            with c3:
+                # Renamed "Split By" to "Category" for clarity, but logic is similar
+                split_by = st.selectbox("Category / Split", ["Party", "Alliance", "Constituency Name", "District", "None"], index=0)
+            with c4:
+                agg_type = st.selectbox("Aggregation", ["Sum", "Average", "Maximum", "Count"], index=0)
 
             # Map selection to pandas function strings
-            agg_map = {
-                "Sum (Total)": "sum",
-                "Average": "mean",
-                "Maximum": "max",
-                "Minimum": "min",
-                "Count": "count"
-            }
+            agg_map = {"Sum": "sum", "Average": "mean", "Maximum": "max", "Count": "count"}
             
+            # 3. Resolve Columns
             metric_col = smart_column_lookup(df_filtered, metric)
+            cat_col = smart_column_lookup(df_filtered, split_by) if split_by != "None" else None
             year_col = smart_column_lookup(df_filtered, "Year")
-            
-            if metric_col and year_col:
+
+            if metric_col:
                 try:
-                    # Force numeric (Crucial for custom metrics)
+                    # Force numeric
                     df_filtered[metric_col] = pd.to_numeric(df_filtered[metric_col], errors='coerce')
                     
-                    group_cols = [year_col]
-                    if split_by != "None":
-                        split_col = smart_column_lookup(df_filtered, split_by)
-                        group_cols.append(split_col)
+                    # --- PLOT LOGIC SWITCHER ---
+                    fig, ax = plt.subplots(figsize=(10, 6))
                     
-                    # 3. Dynamic Aggregation
-                    # We use agg_map[agg_type] to get 'sum', 'mean', etc.
-                    chart_data = df_filtered.groupby(group_cols)[metric_col].agg(agg_map[agg_type]).reset_index()
-                    
-                    fig, ax = plt.subplots(figsize=(10, 5))
-                    
-                    if split_by != "None":
-                        sns.lineplot(data=chart_data, x=year_col, y=metric_col, hue=split_col, marker="o", ax=ax)
-                    else:
-                        sns.lineplot(data=chart_data, x=year_col, y=metric_col, marker="o", ax=ax)
-                    
-                    plt.grid(True, alpha=0.3)
-                    plt.title(f"{agg_type} of {metric} over Time")
+                    # A. LINE CHART (Time Series)
+                    if "Line" in chart_type:
+                        if year_col:
+                            group_cols = [year_col]
+                            if cat_col: group_cols.append(cat_col)
+                            
+                            data = df_filtered.groupby(group_cols)[metric_col].agg(agg_map[agg_type]).reset_index()
+                            
+                            if cat_col:
+                                sns.lineplot(data=data, x=year_col, y=metric_col, hue=cat_col, marker="o", ax=ax)
+                            else:
+                                sns.lineplot(data=data, x=year_col, y=metric_col, marker="o", ax=ax)
+                            plt.title(f"{agg_type} {metric} over Years")
+
+                    # B. BAR CHART (Categorical Comparison)
+                    elif "Bar" in chart_type:
+                        if not cat_col:
+                            st.warning("⚠️ Please select a Category (e.g., Party) to create a Bar Chart.")
+                        else:
+                            # Group by Category only (aggregating across all selected years)
+                            data = df_filtered.groupby(cat_col)[metric_col].agg(agg_map[agg_type]).reset_index()
+                            # Sort for better visuals
+                            data = data.sort_values(metric_col, ascending=False).head(15) # Top 15 to avoid overcrowding
+                            
+                            sns.barplot(data=data, x=metric_col, y=cat_col, palette="viridis", ax=ax)
+                            plt.title(f"Top 15 {split_by} by {agg_type} {metric}")
+                            ax.bar_label(ax.containers[0], fmt='%.0f', padding=3) # Add labels
+
+                    # C. PIE CHART (Part to Whole)
+                    elif "Pie" in chart_type:
+                        if not cat_col:
+                            st.warning("⚠️ Please select a Category to create a Pie Chart.")
+                        else:
+                            data = df_filtered.groupby(cat_col)[metric_col].agg("sum").reset_index()
+                            data = data.sort_values(metric_col, ascending=False).head(10) # Top 10
+                            
+                            # Use matplotlib pie directly
+                            ax.pie(data[metric_col], labels=data[cat_col], autopct='%1.1f%%', startangle=140)
+                            plt.title(f"{metric} Share (Top 10)")
+
+                    # D. BOX PLOT (Distribution/Outliers)
+                    elif "Box" in chart_type:
+                        if not cat_col:
+                            # Single distribution if no category
+                            sns.boxplot(y=df_filtered[metric_col], ax=ax)
+                        else:
+                            # Distribution per category
+                            top_cats = df_filtered[cat_col].value_counts().head(10).index
+                            sub_data = df_filtered[df_filtered[cat_col].isin(top_cats)]
+                            sns.boxplot(data=sub_data, x=cat_col, y=metric_col, ax=ax)
+                            plt.xticks(rotation=45)
+                        plt.title(f"Distribution of {metric} (Outlier Analysis)")
+
+                    plt.tight_layout()
                     st.pyplot(fig)
                     
                 except Exception as e:
-                    st.warning(f"Could not plot: {e}")
+                    st.error(f"Could not generate plot: {e}")
+            else:
+                st.info("Select a valid metric to begin.")
         # TAB 2: AI ANALYST (UPDATED)
         with tab_ai:
             st.markdown("### 🤖 Ask questions in plain English")
