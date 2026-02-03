@@ -27,6 +27,36 @@ with st.sidebar:
     st.info("Upload Excel (.xlsx) files with multiple sheets or individual CSVs.")
 
 # --- 2. HELPER FUNCTIONS ---
+def generate_custom_metric_code(df, metric_name, description):
+    """
+    Asks AI to generate pandas code for a new column based on description.
+    """
+    genai.configure(api_key=api_key)
+    
+    columns_list = list(df.columns)
+    
+    prompt = f"""
+    You are a Python Pandas expert.
+    Task: Write a Python snippet to create a new column named '{metric_name}' in the dataframe `df`.
+    
+    ### CONTEXT
+    - Existing Columns: {columns_list}
+    - User Description: "{description}"
+    
+    ### RULES
+    1. Use `smart_lookup(df, 'column_name')` for ALL column references. 
+       (Example: `df[smart_lookup(df, 'Votes Polled')]`)
+    2. Ensure columns are numeric before math. Use `pd.to_numeric(..., errors='coerce')`.
+    3. Return ONLY the code snippet. No markdown, no comments.
+    
+    ### EXAMPLE OUTPUT
+    df['{metric_name}'] = pd.to_numeric(df[smart_lookup(df, 'Win Vote')], errors='coerce') / pd.to_numeric(df[smart_lookup(df, 'Electors')], errors='coerce')
+    """
+    
+    model = genai.GenerativeModel('gemini-2.5-flash-lite')
+    response = model.generate_content(prompt)
+    return response.text.strip()
+
 def smart_column_lookup(df, guessed_name):
     """Fuzzy matching to find the correct column name."""
     # 1. Exact match
@@ -181,6 +211,75 @@ if uploaded_files:
     if master_df is not None:
         st.toast(f"Data Loaded! {len(master_df)} records.", icon="✅")
         
+        # ==========================================
+        # 1. NEW: CUSTOM METRICS SECTION STARTS HERE
+        # ==========================================
+        
+        # Initialize Session State for Custom Metrics if not exists
+        if "custom_metrics" not in st.session_state:
+            st.session_state.custom_metrics = {}
+
+        # --- SIDEBAR: METRIC BUILDER ---
+        with st.sidebar.expander("🛠️ Build Custom Metrics", expanded=False):
+            st.caption("Create new columns using plain English.")
+            
+            # Inputs
+            new_metric_name = st.text_input("Name (e.g., Win_Margin_Percent)")
+            new_metric_desc = st.text_area("Logic (e.g., Win Vote minus Run Vote divided by Votes Polled)")
+            
+            if st.button("Draft Metric"):
+                if new_metric_name and new_metric_desc:
+                    with st.spinner("Translating logic..."):
+                        # Generate Code using your helper function
+                        code = generate_custom_metric_code(master_df.head(), new_metric_name, new_metric_desc)
+                        st.session_state.draft_code = code
+                        st.session_state.draft_name = new_metric_name
+                        st.rerun()
+
+            # Preview & Save Section
+            if "draft_code" in st.session_state:
+                st.write("---")
+                st.write("**Preview Code:**")
+                st.code(st.session_state.draft_code, language="python")
+                
+                # Test Run on a small sample
+                try:
+                    test_df = master_df.head(50).copy()
+                    exec_globals = {"df": test_df, "pd": pd, "smart_lookup": smart_column_lookup}
+                    exec(st.session_state.draft_code, exec_globals)
+                    
+                    # Show result
+                    st.success("Test Calculation Successful!")
+                    st.dataframe(test_df[[st.session_state.draft_name]].head(3))
+                    
+                    if st.button("✅ Save Metric"):
+                        st.session_state.custom_metrics[st.session_state.draft_name] = st.session_state.draft_code
+                        del st.session_state.draft_code # Clear draft
+                        st.rerun()
+                        
+                except Exception as e:
+                    st.error(f"Error in logic: {e}")
+
+        # --- APPLY SAVED METRICS TO MASTER DATA ---
+        if not master_df.empty and st.session_state.custom_metrics:
+            for name, code in st.session_state.custom_metrics.items():
+                try:
+                    # Execute the saved code on the full dataset
+                    exec_globals = {"df": master_df, "pd": pd, "smart_lookup": smart_column_lookup}
+                    exec(code, exec_globals)
+                    # Note: master_df is modified in-place by the exec code
+                except Exception as e:
+                    st.warning(f"Could not apply metric '{name}': {e}")
+            
+            st.sidebar.success(f"Active Metrics: {list(st.session_state.custom_metrics.keys())}")
+
+        # ==========================================
+        # END OF CUSTOM METRICS SECTION
+        # ==========================================
+
+        # --- B. SIDEBAR FILTERS (Existing Code) ---
+        st.sidebar.header("🔍 Global Filters")
+        # ... (Rest of your code continues here)
         # --- B. SIDEBAR FILTERS ---
         st.sidebar.header("🔍 Global Filters")
         
