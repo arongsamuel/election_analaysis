@@ -302,52 +302,75 @@ if uploaded_files:
                 df_filtered = df_filtered[df_filtered[party_col].isin(selected_parties)]
 
         # --- C. TABS ---
-        tab_trends, tab_ai, tab_data = st.tabs(["📈 Dashboard", "🤖 AI Analyst", "📋 Data"])
+        # ==========================================
+        # 2. NEW: INTERACTIVE DATA EDITOR
+        # ==========================================
+        st.subheader("📝 Data Editor & Analysis")
+        
+        # We place the editor inside an expander so it doesn't clutter the view
+        with st.expander("View & Edit Raw Data (Add Rows/Change Values)", expanded=False):
+            # st.data_editor allows in-place editing
+            # num_rows="dynamic" adds the "Append" button at the bottom
+            df_edited = st.data_editor(
+                df_filtered,
+                num_rows="dynamic",
+                use_container_width=True,
+                key="editor_main" # Key helps persist state
+            )
+            
+            # Show a download button for the modified data
+            csv_data = df_edited.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "📥 Download Modified Data",
+                csv_data,
+                "modified_election_data.csv",
+                "text/csv"
+            )
+
+        # ==========================================
+        # TABS (Updated to use 'df_edited')
+        # ==========================================
+        tab_trends, tab_ai, tab_data = st.tabs(["📈 Dashboard", "🤖 AI Analyst", "📋 Data Stats"])
 
         # TAB 1: VISUAL TRENDS
         with tab_trends:
             st.subheader("Visual Analysis")
             
-            # 1. Setup Data Options
+            # --- SETUP ---
             default_metrics = ["Votes", "Margin", "Electors"]
             custom_keys = list(st.session_state.custom_metrics.keys()) if "custom_metrics" in st.session_state else []
             available_metrics = list(set(default_metrics + custom_keys))
             
-            # 2. Control Panel
             c1, c2, c3, c4 = st.columns(4)
             with c1:
                 chart_type = st.selectbox("Chart Type", ["Line (Time Series)", "Bar (Comparison)", "Pie (Share)", "Box (Distribution)"])
             with c2:
                 metric = st.selectbox("Metric", available_metrics, index=0)
             with c3:
-                # Renamed "Split By" to "Category" for clarity, but logic is similar
                 split_by = st.selectbox("Category / Split", ["Party", "Alliance", "Constituency Name", "District", "None"], index=0)
             with c4:
                 agg_type = st.selectbox("Aggregation", ["Sum", "Average", "Maximum", "Count"], index=0)
 
-            # Map selection to pandas function strings
             agg_map = {"Sum": "sum", "Average": "mean", "Maximum": "max", "Count": "count"}
             
-            # 3. Resolve Columns
-            metric_col = smart_column_lookup(df_filtered, metric)
-            cat_col = smart_column_lookup(df_filtered, split_by) if split_by != "None" else None
-            year_col = smart_column_lookup(df_filtered, "Year")
+            # --- USE df_edited HERE ---
+            metric_col = smart_column_lookup(df_edited, metric)
+            cat_col = smart_column_lookup(df_edited, split_by) if split_by != "None" else None
+            year_col = smart_column_lookup(df_edited, "Year")
 
             if metric_col:
                 try:
-                    # Force numeric
-                    df_filtered[metric_col] = pd.to_numeric(df_filtered[metric_col], errors='coerce')
+                    # Force numeric on the EDITED dataframe
+                    df_edited[metric_col] = pd.to_numeric(df_edited[metric_col], errors='coerce')
                     
-                    # --- PLOT LOGIC SWITCHER ---
                     fig, ax = plt.subplots(figsize=(10, 6))
                     
-                    # A. LINE CHART (Time Series)
+                    # A. LINE CHART
                     if "Line" in chart_type:
                         if year_col:
                             group_cols = [year_col]
                             if cat_col: group_cols.append(cat_col)
-                            
-                            data = df_filtered.groupby(group_cols)[metric_col].agg(agg_map[agg_type]).reset_index()
+                            data = df_edited.groupby(group_cols)[metric_col].agg(agg_map[agg_type]).reset_index()
                             
                             if cat_col:
                                 sns.lineplot(data=data, x=year_col, y=metric_col, hue=cat_col, marker="o", ax=ax)
@@ -355,65 +378,57 @@ if uploaded_files:
                                 sns.lineplot(data=data, x=year_col, y=metric_col, marker="o", ax=ax)
                             plt.title(f"{agg_type} {metric} over Years")
 
-                    # B. BAR CHART (Categorical Comparison)
+                    # B. BAR CHART
                     elif "Bar" in chart_type:
                         if not cat_col:
-                            st.warning("⚠️ Please select a Category (e.g., Party) to create a Bar Chart.")
+                            st.warning("⚠️ Select a Category (e.g., Party) for Bar Charts.")
                         else:
-                            # Group by Category only (aggregating across all selected years)
-                            data = df_filtered.groupby(cat_col)[metric_col].agg(agg_map[agg_type]).reset_index()
-                            # Sort for better visuals
-                            data = data.sort_values(metric_col, ascending=False).head(15) # Top 15 to avoid overcrowding
-                            
+                            data = df_edited.groupby(cat_col)[metric_col].agg(agg_map[agg_type]).reset_index()
+                            data = data.sort_values(metric_col, ascending=False).head(15)
                             sns.barplot(data=data, x=metric_col, y=cat_col, palette="viridis", ax=ax)
                             plt.title(f"Top 15 {split_by} by {agg_type} {metric}")
-                            ax.bar_label(ax.containers[0], fmt='%.0f', padding=3) # Add labels
+                            ax.bar_label(ax.containers[0], fmt='%.0f', padding=3)
 
-                    # C. PIE CHART (Part to Whole)
+                    # C. PIE CHART
                     elif "Pie" in chart_type:
                         if not cat_col:
-                            st.warning("⚠️ Please select a Category to create a Pie Chart.")
+                            st.warning("⚠️ Select a Category for Pie Charts.")
                         else:
-                            data = df_filtered.groupby(cat_col)[metric_col].agg("sum").reset_index()
-                            data = data.sort_values(metric_col, ascending=False).head(10) # Top 10
-                            
-                            # Use matplotlib pie directly
+                            data = df_edited.groupby(cat_col)[metric_col].sum().reset_index()
+                            data = data.sort_values(metric_col, ascending=False).head(10)
                             ax.pie(data[metric_col], labels=data[cat_col], autopct='%1.1f%%', startangle=140)
                             plt.title(f"{metric} Share (Top 10)")
 
-                    # D. BOX PLOT (Distribution/Outliers)
+                    # D. BOX PLOT
                     elif "Box" in chart_type:
                         if not cat_col:
-                            # Single distribution if no category
-                            sns.boxplot(y=df_filtered[metric_col], ax=ax)
+                            sns.boxplot(y=df_edited[metric_col], ax=ax)
                         else:
-                            # Distribution per category
-                            top_cats = df_filtered[cat_col].value_counts().head(10).index
-                            sub_data = df_filtered[df_filtered[cat_col].isin(top_cats)]
+                            top_cats = df_edited[cat_col].value_counts().head(10).index
+                            sub_data = df_edited[df_edited[cat_col].isin(top_cats)]
                             sns.boxplot(data=sub_data, x=cat_col, y=metric_col, ax=ax)
                             plt.xticks(rotation=45)
-                        plt.title(f"Distribution of {metric} (Outlier Analysis)")
+                        plt.title(f"Distribution of {metric}")
 
                     plt.tight_layout()
                     st.pyplot(fig)
                     
                 except Exception as e:
-                    st.error(f"Could not generate plot: {e}")
+                    st.error(f"Plot Error: {e}")
             else:
-                st.info("Select a valid metric to begin.")
-        # TAB 2: AI ANALYST (UPDATED)
+                st.info("Select a metric.")
+
+        # TAB 2: AI ANALYST (Updated to use df_edited)
         with tab_ai:
-            st.markdown("### 🤖 Ask questions in plain English")
-            st.caption("Examples: *'Who won the most seats in 1980?'*, *'Plot the margin trend for INC'*, *'What is the average vote share?'*")
+            st.markdown("### 🤖 Ask questions about your data (including edits)")
             
+            # Chat Interface (Same logic, just passing df_edited)
             if "messages" not in st.session_state:
                 st.session_state.messages = []
 
             for message in st.session_state.messages:
                 with st.chat_message(message["role"]):
                     st.markdown(message["content"])
-                    # If there was a plot associated with this message, we can't easily persist it in this simple list
-                    # usually, we just persist text. For complex history, we'd need a robust state object.
 
             if prompt := st.chat_input("Ask your data..."):
                 st.session_state.messages.append({"role": "user", "content": prompt})
@@ -421,28 +436,28 @@ if uploaded_files:
                     st.write(prompt)
 
                 with st.chat_message("assistant"):
-                    with st.status("🧠 Thinking...", expanded=True) as status:
-                        fig, text_response, code = query_gemini_smart(prompt, df_filtered)
+                    with st.status("🧠 Analyzing...", expanded=True) as status:
+                        # --- CRITICAL: Pass df_edited here ---
+                        fig, text_response, code = query_gemini_smart(prompt, df_edited)
                         
                         status.update(label="Complete", state="complete", expanded=False)
                         
-                        # 1. Show Text Insight
                         if text_response:
                             st.markdown(f"**Insight:** \n {text_response}")
                             st.session_state.messages.append({"role": "assistant", "content": text_response})
                         elif not fig:
-                            st.warning("The agent ran the code but didn't return a specific answer. Check the code below.")
+                            st.warning("Analysis complete, check code.")
 
-                        # 2. Show Plot
                         if fig:
                             st.pyplot(fig)
                             
-                        # 3. Show Code (Optional)
                         with st.expander("🔎 View Python Logic"):
                             st.code(code, language="python")
 
-        # TAB 3: DATA
+        # TAB 3: DATA STATS (Formerly 'Raw Data')
         with tab_data:
-            st.dataframe(df_filtered)
+            st.info("The detailed raw data is available in the 'View & Edit' section above.")
+            st.write("**Dataset Statistics:**")
+            st.write(df_edited.describe())
 else:
     st.info("👆 Upload Data to start.")
