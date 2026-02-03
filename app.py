@@ -307,9 +307,20 @@ if uploaded_files:
         # TAB 1: VISUAL TRENDS
         with tab_trends:
             st.subheader("Quick Trends")
+            
+            # --- FIX: Dynamically combine Default Metrics + Custom Metrics ---
+            default_metrics = ["Votes", "Margin", "Electors"]
+            
+            # Add custom metric names if they exist in session state
+            custom_keys = list(st.session_state.custom_metrics.keys()) if "custom_metrics" in st.session_state else []
+            
+            # Combine unique options
+            available_metrics = list(set(default_metrics + custom_keys))
+            
             col_x, col_y = st.columns(2)
             with col_x:
-                metric = st.selectbox("Metric", ["Votes", "Margin", "Electors"])
+                # Use the dynamic list here instead of the hardcoded one
+                metric = st.selectbox("Metric", available_metrics, index=0)
             with col_y:
                 split_by = st.selectbox("Split By", ["Party", "Alliance", "None"], index=0)
             
@@ -318,23 +329,30 @@ if uploaded_files:
             
             if metric_col and year_col:
                 try:
+                    # Ensure the metric column is numeric (Crucial for custom metrics!)
+                    # Custom metrics might be "object" type initially, forcing conversion prevents crash
+                    df_filtered[metric_col] = pd.to_numeric(df_filtered[metric_col], errors='coerce')
+                    
                     group_cols = [year_col]
                     if split_by != "None":
                         split_col = smart_column_lookup(df_filtered, split_by)
                         group_cols.append(split_col)
                     
+                    # Group and Sum
                     chart_data = df_filtered.groupby(group_cols)[metric_col].sum().reset_index()
                     
                     fig, ax = plt.subplots(figsize=(10, 5))
+                    
                     if split_by != "None":
                         sns.lineplot(data=chart_data, x=year_col, y=metric_col, hue=split_col, marker="o", ax=ax)
                     else:
                         sns.lineplot(data=chart_data, x=year_col, y=metric_col, marker="o", ax=ax)
                     
                     plt.grid(True, alpha=0.3)
+                    plt.title(f"{metric} over Time") # Added title for clarity
                     st.pyplot(fig)
                 except Exception as e:
-                    st.warning(f"Could not plot: {e}")
+                    st.warning(f"Could not plot '{metric}': {e}. \nTip: Ensure your custom metric results in numbers, not text.")
 
         # TAB 2: AI ANALYST (UPDATED)
         with tab_ai:
