@@ -9,1037 +9,889 @@ import seaborn as sns
 import difflib
 import re
 import numpy as np
-from scipy import stats
 
-# --- 1. CONFIGURATION & SETUP ---
-st.set_page_config(page_title="Kerala Election Trends & AI Analyst", layout="wide")
+# ─────────────────────────────────────────────
+# 1. PAGE CONFIG & GLOBAL STYLES
+# ─────────────────────────────────────────────
+st.set_page_config(
+    page_title="Kerala Election Atlas",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+html, body, [class*="css"] {
+    font-family: 'DM Sans', sans-serif;
+    background-color: #0b1120;
+    color: #e8e4da;
+}
+.atlas-header {
+    background: linear-gradient(135deg, #0d1b2a 0%, #1a2c45 60%, #0d1b2a 100%);
+    border-bottom: 2px solid #c9a84c;
+    padding: 1.6rem 2rem 1.2rem;
+    margin: -1rem -1rem 1.5rem -1rem;
+    position: relative; overflow: hidden;
+}
+.atlas-header::before {
+    content:''; position:absolute; top:-40px; right:-40px;
+    width:200px; height:200px; border-radius:50%;
+    background:radial-gradient(circle,rgba(201,168,76,0.12) 0%,transparent 70%);
+}
+.atlas-title {
+    font-family:'Playfair Display',serif; font-size:2.4rem; font-weight:900;
+    color:#c9a84c; letter-spacing:-0.5px; margin:0; line-height:1;
+}
+.atlas-subtitle {
+    font-size:0.78rem; color:#8fa3c0; letter-spacing:2.5px;
+    text-transform:uppercase; margin-top:0.3rem;
+}
+.metric-row { display:flex; gap:1rem; margin-bottom:1.2rem; flex-wrap:wrap; }
+.metric-card {
+    background:linear-gradient(135deg,#142236 0%,#1c3050 100%);
+    border:1px solid #2a4060; border-left:3px solid #c9a84c;
+    border-radius:10px; padding:1rem 1.4rem; flex:1; min-width:140px;
+}
+.metric-card .mc-label { font-size:0.68rem; letter-spacing:1.5px; text-transform:uppercase; color:#7a9ab8; margin-bottom:0.2rem; }
+.metric-card .mc-value { font-family:'Playfair Display',serif; font-size:1.8rem; font-weight:700; color:#e8e4da; line-height:1; }
+.metric-card .mc-sub { font-size:0.72rem; color:#5a7a98; margin-top:0.15rem; }
+.section-title {
+    font-family:'Playfair Display',serif; font-size:1.25rem; font-weight:700; color:#c9a84c;
+    border-bottom:1px solid #2a3d55; padding-bottom:0.4rem; margin:1.4rem 0 0.9rem;
+}
+[data-testid="stSidebar"] { background:#0d1b2a !important; border-right:1px solid #1e3250; }
+.stButton > button {
+    background:linear-gradient(135deg,#1a3050 0%,#243f60 100%) !important;
+    border:1px solid #2a4060 !important; color:#c8d8e8 !important;
+    font-family:'DM Sans',sans-serif !important; font-weight:500 !important;
+    border-radius:8px !important; transition:all 0.2s ease; font-size:0.8rem !important;
+    padding:0.4rem 0.3rem !important;
+}
+.stButton > button:hover { background:#c9a84c !important; color:#0b1120 !important; border-color:#c9a84c !important; }
+.stSelectbox > div > div, .stMultiSelect > div > div {
+    background:#0f1e30 !important; border:1px solid #2a4060 !important;
+    color:#e8e4da !important; border-radius:8px !important;
+}
+.streamlit-expanderHeader {
+    background:#0f1e30 !important; color:#c9a84c !important;
+    border:1px solid #2a4060 !important; border-radius:8px !important;
+}
+.stTextInput > div > div > input, .stTextArea > div > div > textarea {
+    background:#0f1e30 !important; border:1px solid #2a4060 !important;
+    color:#e8e4da !important; border-radius:8px !important;
+}
+hr { border-color:#1e3250 !important; }
+[data-testid="stChatMessage"] {
+    background:#0f1e30 !important; border:1px solid #1e3250 !important; border-radius:10px !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────
+# Matplotlib dark theme
+# ─────────────────────────────────────────────
+DARK_BG   = "#0b1120"; CARD_BG = "#0f1e30"; GOLD = "#c9a84c"
+MUTED     = "#8fa3c0";  TEXT_MAIN = "#e8e4da"
+A1 = "#e05c4b"; A2 = "#4b9ce8"; A3 = "#6bcb77"
+BLOC_COLORS = {"LDF": A1, "UDF": A2, "NDA": "#f0a500", "Other": "#888"}
+PAL = [GOLD, A1, A2, A3, "#b07aff", "#ff9f7a", "#7af0d8", "#ffde7a", "#c080ff", "#80d4c0"]
+
+def set_plot_style():
+    plt.rcParams.update({
+        "figure.facecolor": DARK_BG, "axes.facecolor": CARD_BG,
+        "axes.edgecolor": "#2a4060", "axes.labelcolor": MUTED,
+        "axes.titlecolor": GOLD, "axes.titlesize": 11, "axes.labelsize": 9,
+        "xtick.color": MUTED, "ytick.color": MUTED, "xtick.labelsize": 8, "ytick.labelsize": 8,
+        "grid.color": "#1e3250", "grid.linestyle": "--", "grid.alpha": 0.5,
+        "legend.facecolor": "#0d1b2a", "legend.edgecolor": "#2a4060",
+        "legend.fontsize": 8, "legend.labelcolor": TEXT_MAIN,
+        "text.color": TEXT_MAIN, "font.family": "DejaVu Sans",
+        "lines.linewidth": 2.2, "patch.linewidth": 0,
+    })
+set_plot_style()
+
+# ─────────────────────────────────────────────
+# 2. API KEY
+# ─────────────────────────────────────────────
 if "GEMINI_API_KEY" in st.secrets:
     api_key = st.secrets["GEMINI_API_KEY"]
 else:
-    with st.sidebar:
-        st.warning("API Key not found in secrets. Please enter it below:")
-        api_key = st.text_input("Gemini API Key", type="password")
+    api_key = None
 
-with st.sidebar:
-    st.header("⚙️ Configuration")
-    st.divider()
-    st.info("Upload Excel (.xlsx) files with multiple sheets or individual CSVs.")
-
-# --- KERALA-SPECIFIC PARTY DEFINITIONS ---
-INDIVIDUAL_PARTIES = ["CPI", "CPM", "INC", "ML", "KCM", "KCJ"]
-
+# ─────────────────────────────────────────────
+# 3. PARTY / BLOC DEFINITIONS
+# ─────────────────────────────────────────────
+INDIVIDUAL_PARTIES = ["CPI","CPM","INC","ML","KCM","KCJ"]
 PARTY_FAMILIES = {
-    "Kerala Congress Family": ["KC", "KCM", "KCJ", "KCJB", "KCB", "KCS", "KCST", "KJS", "KCAMG", "KCD"],
-    "Muslim League Family":   ["ML", "AIML", "INL"],
-    "Congress Family":        ["INC", "INCO", "INCA", "CS"],
-    "Socialist Family":       ["PSP", "RSP", "SSP", "ISP", "KTP", "CS", "KSP", "LKD", "LJD",
-                               "BLD", "DSP", "ICS", "JDU", "NCP", "RSPB"],
-    "CPM Breakaway":          ["CMP", "JSS", "RMP"],
+    "Kerala Congress Family": ["KC","KCM","KCJ","KCJB","KCB","KCS","KCST","KJS","KCAMG","KCD"],
+    "Muslim League Family":   ["ML","AIML","INL"],
+    "Congress Family":        ["INC","INCO","INCA","CS"],
+    "Socialist Family":       ["PSP","RSP","SSP","ISP","KTP","CS","KSP","LKD","LJD","BLD","DSP","ICS","JDU","NCP","RSPB"],
+    "CPM Breakaway":          ["CMP","JSS","RMP"],
 }
-
 BLOCS = {
-    "LDF": ["CPM", "CPI", "NCP", "JDU", "RSP", "KTP", "CMP", "JSS", "RMP"],
-    "UDF": ["INC", "ML", "AIML", "INL", "KC", "KCM", "KCJ", "KCJB", "KCB", "KCS",
-            "KCST", "KJS", "KCAMG", "KCD", "INCO", "INCA", "CS"],
-    "NDA": ["BJP", "BDJS", "KCP", "BDP"],
+    "LDF": ["CPM","CPI","NCP","JDU","RSP","KTP","CMP","JSS","RMP","LDF"],
+    "UDF": ["INC","ML","AIML","INL","KC","KCM","KCJ","KCJB","KCB","KCS","KCST","KJS","KCAMG","KCD","INCO","INCA","CS","UDF"],
+    "NDA": ["BJP","BDJS","KCP","BDP","NDA"],
 }
 
-# --- 2. HELPER FUNCTIONS ---
-def smart_column_lookup(df, guessed_name):
-    if guessed_name in df.columns:
-        return guessed_name
-    for col in df.columns:
-        if col.lower() == guessed_name.lower():
-            return col
-    matches = difflib.get_close_matches(guessed_name, df.columns, n=1, cutoff=0.5)
-    return matches[0] if matches else guessed_name
+# ─────────────────────────────────────────────
+# 4. HELPERS
+# ─────────────────────────────────────────────
+def smart_col(df, name):
+    if name in df.columns: return name
+    for c in df.columns:
+        if c.strip().lower() == name.strip().lower(): return c
+    m = difflib.get_close_matches(name, df.columns, n=1, cutoff=0.45)
+    return m[0] if m else name
 
-def assign_family(party, families=PARTY_FAMILIES):
-    for family, members in families.items():
-        if party in members:
-            return family
+def assign_family(p):
+    for f, ms in PARTY_FAMILIES.items():
+        if p in ms: return f
     return "Other"
 
-def assign_bloc(party, blocs=BLOCS):
-    for bloc, members in blocs.items():
-        if party in members:
-            return bloc
+def assign_bloc(v):
+    if pd.isna(v): return "Other"
+    v = str(v).strip()
+    for b, ms in BLOCS.items():
+        if v in ms: return b
     return "Other"
 
-def safe_numeric(series):
-    return pd.to_numeric(series, errors='coerce')
+def n(s): return pd.to_numeric(s, errors='coerce')
 
+def fmt_year(y):
+    try: return str(int(float(y)))
+    except: return str(y)
+
+def mc(label, value, sub=""):
+    return (f'<div class="metric-card"><div class="mc-label">{label}</div>'
+            f'<div class="mc-value">{value}</div>'
+            + (f'<div class="mc-sub">{sub}</div>' if sub else '') + '</div>')
+
+def margin_cat(margin, tv):
+    if tv == 0: return "Unknown"
+    p = margin/tv*100
+    if p > 20: return "Brute"
+    elif p > 10: return "Comfortable"
+    elif p > 5: return "Narrow"
+    else: return "Very Thin"
+
+# ─────────────────────────────────────────────
+# 5. STATISTICS
+# ─────────────────────────────────────────────
+def gallagher(vp, sp):
+    d = np.array(vp)-np.array(sp); return np.sqrt(0.5*np.sum(d**2))
+def loosemore(vp, sp):
+    return 0.5*np.sum(np.abs(np.array(vp)-np.array(sp)))
+def enep(vs):
+    p = np.array(vs)/100; p=p[p>0]; return 1/np.sum(p**2) if len(p) else np.nan
+def enpp(ss):
+    p = np.array(ss)/100; p=p[p>0]; return 1/np.sum(p**2) if len(p) else np.nan
+def pedersen(d1, d2):
+    pts = set(d1)|set(d2); return 0.5*sum(abs(d2.get(p,0)-d1.get(p,0)) for p in pts)
+def hhi(vs):
+    return np.sum((np.array(vs)/100)**2)
+def frac(vs):
+    p=np.array(vs)/100; return 1-np.sum(p**2)
+def entropy(vs):
+    p=np.array(vs)/100; p=p[p>0]; return -np.sum(p*np.log(p))
+
+# ─────────────────────────────────────────────
+# 6. DATA LOADING
+# ─────────────────────────────────────────────
 @st.cache_data
-def load_and_combine_data(uploaded_files):
+def load_data(uploaded_files):
     all_dfs = []
     for file in uploaded_files:
         try:
-            file_ext = file.name.split('.')[-1].lower()
-            def process_df(df_temp, source_name):
-                if 'Cons No.' in df_temp.columns:
-                    df_temp['Cons No.'] = df_temp['Cons No.'].astype(str)
-                if 'Year' not in df_temp.columns:
+            ext = file.name.split('.')[-1].lower()
+            def proc(df, src):
+                df.columns = [c.strip() for c in df.columns]
+                rmap = {
+                    " Elecors":"Electors","Elecors":"Electors",
+                    "Votes polled ":"Votes Polled","Votes polled":"Votes Polled",
+                    "Margin Win Vote-Run Vote":"Margin",
+                    "Others Vote {PollVote-(Win vote+ Run Vote )}":"Others Vote",
+                    "NDA/ BJP vote":"NDA BJP Vote",
+                    "Run Alliance ":"Run Alliance",
+                    "W Alliance":"Win Alliance",
+                    "Type of Cons":"Category",
+                }
+                df.rename(columns=rmap, inplace=True)
+                if 'Cons No.' in df.columns:
+                    df['Cons No.'] = df['Cons No.'].astype(str)
+                if 'Year' not in df.columns:
                     try:
-                        year_match = re.search(r'\d{4}', str(source_name))
-                        df_temp['Year'] = int(year_match.group(0)) if year_match else source_name
-                    except:
-                        df_temp['Year'] = source_name
-                return df_temp
-
-            if file_ext in ['xlsx', 'xls']:
-                xls_dict = pd.read_excel(file, sheet_name=None)
-                for sheet_name, df in xls_dict.items():
-                    df = process_df(df, sheet_name)
-                    all_dfs.append(df)
-            elif file_ext == 'csv':
-                df = pd.read_csv(file)
-                df = process_df(df, file.name)
-                all_dfs.append(df)
+                        m = re.search(r'\d{4}', str(src))
+                        df['Year'] = int(m.group(0)) if m else src
+                    except: df['Year'] = src
+                try: df['Year'] = df['Year'].apply(lambda y: int(float(y)) if pd.notna(y) else y)
+                except: pass
+                return df
+            if ext in ['xlsx','xls']:
+                for sheet, df in pd.read_excel(file, sheet_name=None).items():
+                    all_dfs.append(proc(df, sheet))
+            elif ext == 'csv':
+                all_dfs.append(proc(pd.read_csv(file), file.name))
         except Exception as e:
-            st.error(f"Error reading {file.name}: {e}")
+            st.error(f"Error: {file.name}: {e}")
+    if not all_dfs: return None
+    df = pd.concat(all_dfs, ignore_index=True)
+    df.dropna(subset=['Year'], inplace=True)
+    df['Year'] = df['Year'].astype(int)
+    wc = smart_col(df, "Win Party")
+    if wc in df.columns:
+        df["Party Family"] = df[wc].astype(str).apply(assign_family)
+    wa = smart_col(df, "Win Alliance")
+    if wa in df.columns:
+        df["Bloc"] = df[wa].astype(str).apply(assign_bloc)
+    elif wc in df.columns:
+        df["Bloc"] = df[wc].astype(str).apply(assign_bloc)
+    return df
 
-    if all_dfs:
-        combined = pd.concat(all_dfs, ignore_index=True)
-        # Auto-assign family and bloc columns
-        party_col = smart_column_lookup(combined, "Party")
-        win_party_col = smart_column_lookup(combined, "Win Party")
-        ref_col = win_party_col if win_party_col in combined.columns else (party_col if party_col in combined.columns else None)
-        if ref_col:
-            combined["Party Family"] = combined[ref_col].astype(str).apply(assign_family)
-            combined["Bloc"] = combined[ref_col].astype(str).apply(assign_bloc)
-        return combined
-    return None
-
-def generate_custom_metric_code(df, metric_name, description):
+# ─────────────────────────────────────────────
+# 7. GEMINI
+# ─────────────────────────────────────────────
+def gen_metric_code(df, name, desc):
+    if not api_key: return "# No API key"
     genai.configure(api_key=api_key)
-    columns_list = list(df.columns)
-    prompt = f"""
-    You are a Python Pandas expert.
-    Task: Write a Python snippet to create a new column named '{metric_name}' in the dataframe `df`.
-    Existing Columns: {columns_list}
-    User Description: "{description}"
-    RULES:
-    1. Use `smart_lookup(df, 'column_name')` for ALL column references.
-    2. Ensure columns are numeric before math. Use `pd.to_numeric(..., errors='coerce')`.
-    3. Return ONLY the code snippet. No markdown, no comments.
-    EXAMPLE: df['{metric_name}'] = pd.to_numeric(df[smart_lookup(df, 'Win Vote')], errors='coerce') / pd.to_numeric(df[smart_lookup(df, 'Electors')], errors='coerce')
-    """
-    model = genai.GenerativeModel('gemini-2.5-flash-lite')
-    response = model.generate_content(prompt)
-    return response.text.strip()
+    p = f"""Python Pandas expert. Create column '{name}' in `df`.
+Columns: {list(df.columns)}. Logic: "{desc}"
+Use smart_lookup(df,'col') for columns. pd.to_numeric(...,errors='coerce') for math.
+Return ONLY code, no markdown."""
+    return genai.GenerativeModel('gemini-2.5-flash-lite').generate_content(p).text.strip()
 
-def query_gemini_smart(query, dataframe):
-    if not api_key:
-        return None, None, "⚠️ Please enter your API Key in the sidebar."
+def query_ai(query, df):
+    if not api_key: return None, None, "No API key."
     genai.configure(api_key=api_key)
-    try:
-        data_sample = dataframe.sample(n=5).to_markdown()
-    except:
-        data_sample = dataframe.head(5).to_markdown()
-    columns_list = list(dataframe.columns)
-    system_instruction = """
-    You are an expert Kerala Election Analyst Python Agent.
-    1. You are given a pandas DataFrame `df`.
-    2. ALWAYS use `smart_lookup(df, 'col_name')` to access columns.
-    3. If the user asks for a Plot/Graph: Create a matplotlib figure named `fig`.
-    4. If the user asks for Text/Insight: Calculate the answer and store it in a string variable named `answer`.
-    5. You can do BOTH.
-    6. Return ONLY valid Python code. No markdown, no comments outside the code.
-    """
-    prompt = f"""
-    {system_instruction}
-    Columns: {columns_list}
-    Sample Data:
-    {data_sample}
-    USER REQUEST: {query}
-    """
+    try: sample = df.sample(n=5).to_markdown()
+    except: sample = df.head(5).to_markdown()
+    p = f"""Expert Kerala Election Analyst. DataFrame `df` available.
+Use smart_lookup(df,'col') for columns. For plots: fig=. For text: answer=.
+Columns: {list(df.columns)}\nSample:\n{sample}\nUSER: {query}"""
     model = genai.GenerativeModel('gemini-2.5-flash-lite')
-    for attempt in range(3):
+    for _ in range(3):
         try:
-            response = model.generate_content(prompt)
-            code = response.text.replace("```python", "").replace("```", "").strip()
-            exec_globals = {
-                "df": dataframe, "plt": plt, "sns": sns, "pd": pd, "np": np,
-                "smart_lookup": smart_column_lookup, "fig": None, "answer": None
-            }
-            exec(code, exec_globals)
-            return exec_globals.get('fig'), exec_globals.get('answer'), code
+            code = model.generate_content(p).text.replace("```python","").replace("```","").strip()
+            g = {"df":df,"plt":plt,"sns":sns,"pd":pd,"np":np,"smart_lookup":smart_col,"fig":None,"answer":None}
+            exec(code, g)
+            return g.get('fig'), g.get('answer'), code
         except Exception as e:
-            prompt += f"\n\nPrevious code failed with error: {e}. Fix it."
-    return None, None, "Failed to generate analysis."
+            p += f"\nError: {e}. Fix."
+    return None, None, "Failed."
 
-# ============================================================
-# STATISTICAL INDEX FUNCTIONS
-# ============================================================
+# ─────────────────────────────────────────────
+# 8. PAGE RENDERERS
+# ─────────────────────────────────────────────
 
-def calc_gallagher_index(votes_pct, seats_pct):
-    """Gallagher Index (Least Squares)"""
-    diffs = np.array(votes_pct) - np.array(seats_pct)
-    return np.sqrt(0.5 * np.sum(diffs**2))
+def page_overview(df):
+    wc = smart_col(df,"Win Party"); tv = smart_col(df,"Votes Polled"); el = smart_col(df,"Electors")
+    mc_col = smart_col(df,"Constituency Name")
+    years = sorted(df['Year'].unique())
+    tot_v  = n(df[tv]).sum() if tv in df.columns else 0
+    tot_el = n(df[el]).sum() if el in df.columns else 0
+    turnout = tot_v/tot_el*100 if tot_el>0 else 0
+    np_    = df[wc].nunique() if wc in df.columns else "—"
+    tot_s  = df[mc_col].nunique() if mc_col in df.columns else "—"
 
-def calc_loosemore_hanby(votes_pct, seats_pct):
-    """Loosemore–Hanby Index"""
-    return 0.5 * np.sum(np.abs(np.array(votes_pct) - np.array(seats_pct)))
+    st.markdown('<div class="metric-row">'
+        + mc("Elections", str(len(years)), f"{fmt_year(min(years))} – {fmt_year(max(years))}")
+        + mc("Constituencies", str(tot_s), "unique seats")
+        + mc("Total Votes", f"{tot_v/1e6:.1f}M", "across all elections")
+        + mc("Avg Turnout", f"{turnout:.1f}%", "votes / electors")
+        + mc("Parties Won Seats", str(np_), "distinct parties")
+        + '</div>', unsafe_allow_html=True)
 
-def calc_seat_bonus(votes_pct, seats_pct):
-    """Seat Bonus Index (largest party bonus)"""
-    idx = np.argmax(votes_pct)
-    return seats_pct[idx] - votes_pct[idx]
+    if wc not in df.columns: return
+    col1, col2 = st.columns([3,2])
 
-def calc_pedersen_index(vote_share_t1, vote_share_t2):
-    """Pedersen Index (Total Electoral Volatility)"""
-    return 0.5 * np.sum(np.abs(np.array(vote_share_t2) - np.array(vote_share_t1)))
+    with col1:
+        st.markdown('<div class="section-title">Seats Won by Bloc — All Elections</div>', unsafe_allow_html=True)
+        if 'Bloc' in df.columns:
+            by = df.groupby(['Year','Bloc']).size().unstack(fill_value=0)
+            fig, ax = plt.subplots(figsize=(9,4))
+            bottom = np.zeros(len(by))
+            for b in ['LDF','UDF','NDA','Other']:
+                if b in by.columns:
+                    v = by[b].values
+                    ax.bar(by.index.astype(str), v, bottom=bottom, color=BLOC_COLORS.get(b,"#888"), label=b, width=0.65)
+                    bottom += v
+            ax.set_xlabel("Year"); ax.set_ylabel("Seats"); ax.legend(); ax.grid(axis='y',alpha=0.3)
+            plt.tight_layout(); st.pyplot(fig); plt.close()
 
-def calc_enep(vote_shares):
-    """Effective Number of Electoral Parties"""
-    p = np.array(vote_shares) / 100.0
-    p = p[p > 0]
-    return 1.0 / np.sum(p**2)
+    with col2:
+        st.markdown('<div class="section-title">Top 10 Parties by Total Seats</div>', unsafe_allow_html=True)
+        tp = df[wc].value_counts().head(10).reset_index()
+        tp.columns = ["Party","Seats"]
+        fig2, ax2 = plt.subplots(figsize=(5,4))
+        colors = [GOLD if i==0 else A2 if i==1 else A1 if i==2 else MUTED for i in range(len(tp))]
+        bars = ax2.barh(tp["Party"][::-1], tp["Seats"][::-1], color=colors[::-1])
+        ax2.bar_label(bars, fmt='%d', padding=3, color=TEXT_MAIN, fontsize=8)
+        ax2.set_xlabel("Total Seats")
+        plt.tight_layout(); st.pyplot(fig2); plt.close()
 
-def calc_enpp(seat_shares):
-    """Effective Number of Parliamentary Parties"""
-    p = np.array(seat_shares) / 100.0
-    p = p[p > 0]
-    return 1.0 / np.sum(p**2)
+    if tv in df.columns and el in df.columns:
+        st.markdown('<div class="section-title">Voter Turnout Trend (%)</div>', unsafe_allow_html=True)
+        tr = df.groupby('Year').apply(
+            lambda g: n(g[tv]).sum()/n(g[el]).sum()*100 if n(g[el]).sum()>0 else np.nan
+        ).reset_index(name="Turnout %")
+        fig3, ax3 = plt.subplots(figsize=(12,3))
+        ax3.fill_between(tr['Year'].astype(str), tr['Turnout %'], alpha=0.2, color=GOLD)
+        ax3.plot(tr['Year'].astype(str), tr['Turnout %'], marker='o', color=GOLD)
+        for _, row in tr.iterrows():
+            if pd.notna(row['Turnout %']):
+                ax3.annotate(f"{row['Turnout %']:.1f}%", (str(row['Year']),row['Turnout %']),
+                             textcoords="offset points",xytext=(0,6),ha='center',fontsize=7.5,color=GOLD)
+        ax3.set_ylim(50,90); ax3.set_xlabel("Year")
+        plt.tight_layout(); st.pyplot(fig3); plt.close()
 
-def calc_turnout_rate(votes_polled, electors):
-    return (votes_polled / electors) * 100 if electors > 0 else np.nan
+    # Alliance dominance heatmap over years
+    st.markdown('<div class="section-title">Party Vote Share Heatmap (Top Parties)</div>', unsafe_allow_html=True)
+    if tv in df.columns:
+        top_parties_list = df[wc].value_counts().head(8).index.tolist()
+        heat_rows = []
+        for yr, grp in df.groupby('Year'):
+            tv_sum = n(grp[tv]).sum()
+            for p in top_parties_list:
+                pv = n(grp[grp[wc]==p][tv]).sum()
+                heat_rows.append({"Year": yr, "Party": p, "Vote %": pv/tv_sum*100 if tv_sum>0 else 0})
+        hdf = pd.DataFrame(heat_rows).pivot(index='Party', columns='Year', values='Vote %').fillna(0)
+        hdf.columns = [str(c) for c in hdf.columns]
+        fig4, ax4 = plt.subplots(figsize=(14,4))
+        sns.heatmap(hdf, cmap='YlOrBr', annot=True, fmt='.1f', linewidths=0.3,
+                    linecolor='#1e3250', ax=ax4, cbar_kws={'shrink':0.6})
+        ax4.set_title("Vote % by Party and Election Year")
+        ax4.tick_params(axis='x', rotation=45)
+        plt.tight_layout(); st.pyplot(fig4); plt.close()
 
-def calc_strike_rate(seats_won, seats_contested):
-    return (seats_won / seats_contested) * 100 if seats_contested > 0 else np.nan
 
-def calc_vote_efficiency(votes_won, total_votes):
-    return (votes_won / total_votes) * 100 if total_votes > 0 else np.nan
+def page_parties(df):
+    wc = smart_col(df,"Win Party"); tv = smart_col(df,"Votes Polled")
+    mc_c = smart_col(df,"Constituency Name"); mg = smart_col(df,"Margin")
+    if wc not in df.columns: st.warning("Win Party not found"); return
 
-def calc_wasted_votes(wasted, total):
-    return (wasted / total) * 100 if total > 0 else np.nan
+    all_p = sorted(df[wc].dropna().unique())
+    default = [p for p in INDIVIDUAL_PARTIES if p in all_p]
+    sel = st.multiselect("Select parties to analyse", all_p, default=default, key="psel")
+    if not sel: st.info("Select at least one party."); return
 
-def calc_fractionalization(vote_shares):
-    p = np.array(vote_shares) / 100.0
-    return 1.0 - np.sum(p**2)
-
-def calc_dalton_polarization(vote_shares, positions):
-    """Dalton Polarization Index (requires party positions on a scale)"""
-    p = np.array(vote_shares) / 100.0
-    mean_pos = np.sum(p * np.array(positions))
-    return np.sqrt(np.sum(p * (np.array(positions) - mean_pos)**2))
-
-def calc_hhi(vote_shares):
-    """Herfindahl–Hirschman Index"""
-    return np.sum((np.array(vote_shares) / 100.0)**2)
-
-def calc_entropy_index(vote_shares):
-    p = np.array(vote_shares) / 100.0
-    p = p[p > 0]
-    return -np.sum(p * np.log(p))
-
-def build_transition_matrix(df_a, df_b, cons_col, party_col):
-    """Build a seat transition matrix between two elections"""
-    m = pd.merge(
-        df_a[[cons_col, party_col]].rename(columns={party_col: 'A'}),
-        df_b[[cons_col, party_col]].rename(columns={party_col: 'B'}),
-        on=cons_col, how='inner'
-    )
-    return pd.crosstab(m['A'], m['B'])
-
-def calc_alternation_absorption(wins_by_bloc):
-    """Kerala-specific: how much alternation between LDF/UDF"""
-    blocs = list(wins_by_bloc.keys())
-    if len(blocs) < 2:
-        return np.nan
-    vals = np.array([wins_by_bloc[b] for b in blocs])
-    return 1 - (np.max(vals) - np.min(vals)) / (np.sum(vals) if np.sum(vals) > 0 else 1)
-
-def calc_alliance_dependency(party_votes_solo, party_votes_alliance):
-    """Alliance Dependency Index"""
-    if party_votes_solo + party_votes_alliance == 0:
-        return np.nan
-    return party_votes_alliance / (party_votes_solo + party_votes_alliance)
-
-def calc_margin_category(margin, total_votes):
-    """Classify margin into Brute / Comfortable / Narrow / Very Thin"""
-    if total_votes == 0:
-        return "Unknown"
-    pct = (margin / total_votes) * 100
-    if pct > 20:   return "Brute Majority"
-    elif pct > 10: return "Comfortable"
-    elif pct > 5:  return "Narrow"
-    else:          return "Very Thin"
-
-def get_win_pattern(party, df, cons_col, party_col, win_col):
-    """Classify constituencies as stronghold / neighborhood / chance / hostile"""
-    counts = df[df[win_col] == party][cons_col].value_counts()
-    total_elections = df['Year'].nunique()
-    patterns = {}
-    for cons, wins in counts.items():
-        rate = wins / total_elections
-        if rate >= 0.75:   patterns[cons] = "Stronghold"
-        elif rate >= 0.5:  patterns[cons] = "Neighbourhood"
-        elif rate >= 0.25: patterns[cons] = "Chance"
-        else:              patterns[cons] = "Hostile"
-    return patterns
-
-def compute_party_stats(df, party, year_col='Year', party_col=None,
-                         win_col=None, cons_col=None, votes_col=None,
-                         total_votes_col=None, electors_col=None,
-                         margin_col=None, contested_col=None):
-    """Compute all individual party statistics (Section C of PDF)"""
-    if party_col is None: party_col = smart_column_lookup(df, "Party")
-    if win_col is None:   win_col   = smart_column_lookup(df, "Win Party")
-    if cons_col is None:  cons_col  = smart_column_lookup(df, "Constituency Name")
-    if votes_col is None: votes_col = smart_column_lookup(df, "Win Vote")
-    if total_votes_col is None: total_votes_col = smart_column_lookup(df, "Votes Polled")
-    if electors_col is None: electors_col = smart_column_lookup(df, "Electors")
-    if margin_col is None: margin_col = smart_column_lookup(df, "Margin")
-
-    stats_out = {}
-    for year, grp in df.groupby(year_col):
-        total_seats = len(grp[cons_col].unique()) if cons_col in grp.columns else np.nan
-        won = grp[grp[win_col] == party] if win_col in grp.columns else pd.DataFrame()
-        seats_won = len(won)
-
-        total_v  = safe_numeric(grp[total_votes_col]).sum() if total_votes_col in grp.columns else np.nan
-        party_v  = safe_numeric(won[votes_col]).sum()       if (votes_col in grp.columns and not won.empty) else 0
-
-        vote_pct  = (party_v / total_v * 100) if total_v > 0 else np.nan
-        seat_pct  = (seats_won / total_seats * 100) if (total_seats and total_seats > 0) else np.nan
-
-        margins = safe_numeric(won[margin_col]) if (margin_col in won.columns and not won.empty) else pd.Series(dtype=float)
-        tv_won  = safe_numeric(won[total_votes_col]) if (total_votes_col in won.columns and not won.empty) else pd.Series(dtype=float)
-
-        margin_cats = {}
-        if not margins.empty and not tv_won.empty:
-            for m, t in zip(margins, tv_won):
-                cat = calc_margin_category(m, t)
-                margin_cats[cat] = margin_cats.get(cat, 0) + 1
-
-        stats_out[year] = {
-            "seats_won": seats_won,
-            "vote_pct": round(vote_pct, 2) if not np.isnan(vote_pct) else np.nan,
-            "seat_pct": round(seat_pct, 2) if (seat_pct is not None and not np.isnan(seat_pct)) else np.nan,
-            "avg_margin": round(margins.mean(), 0) if not margins.empty else np.nan,
-            "margin_categories": margin_cats,
-        }
-    return stats_out
-
-def compute_bloc_stats(df, year_col='Year', win_col=None, cons_col=None,
-                        total_votes_col=None, votes_col=None):
-    if win_col is None:          win_col          = smart_column_lookup(df, "Win Party")
-    if cons_col is None:         cons_col         = smart_column_lookup(df, "Constituency Name")
-    if total_votes_col is None:  total_votes_col  = smart_column_lookup(df, "Votes Polled")
-    if votes_col is None:        votes_col        = smart_column_lookup(df, "Win Vote")
-
-    results = {}
-    for year, grp in df.groupby(year_col):
-        total_seats = grp[cons_col].nunique() if cons_col in grp.columns else np.nan
-        total_v     = safe_numeric(grp[total_votes_col]).sum() if total_votes_col in grp.columns else np.nan
-        bloc_row    = {}
-        for bloc, members in BLOCS.items():
-            won      = grp[grp[win_col].isin(members)] if win_col in grp.columns else pd.DataFrame()
-            s_won    = len(won)
-            v_won    = safe_numeric(won[votes_col]).sum() if (votes_col in won.columns and not won.empty) else 0
-            bloc_row[bloc] = {
-                "seats_won":  s_won,
-                "vote_pct":   round(v_won / total_v * 100, 2) if (total_v and total_v > 0) else np.nan,
-                "seat_pct":   round(s_won / total_seats * 100, 2) if (total_seats and total_seats > 0) else np.nan,
-            }
-        results[year] = bloc_row
-    return results
-
-# ============================================================
-# RENDER HELPERS
-# ============================================================
-
-def render_party_analysis(df_edited, party):
-    st.markdown(f"#### 🔍 {party} — Detailed Analysis")
-    stats = compute_party_stats(df_edited, party)
-    if not stats:
-        st.warning(f"No data found for {party}.")
-        return
-
+    # Stats table
     rows = []
-    for yr, s in sorted(stats.items()):
-        row = {"Year": yr, "Seats Won": s["seats_won"],
-               "Vote %": s["vote_pct"], "Seat %": s["seat_pct"],
-               "Avg Margin": s["avg_margin"]}
-        row.update({f"Margin – {k}": v for k, v in s["margin_categories"].items()})
-        rows.append(row)
-    tbl = pd.DataFrame(rows).set_index("Year")
-    st.dataframe(tbl, use_container_width=True)
+    total_el = df['Year'].nunique()
+    for party in sel:
+        for yr, grp in df.groupby('Year'):
+            ts = grp[mc_c].nunique() if mc_c in grp.columns else len(grp)
+            won = (grp[wc]==party).sum()
+            tv_sum = n(grp[tv]).sum() if tv in grp.columns else np.nan
+            pv  = n(grp[grp[wc]==party][tv]).sum() if (tv in grp.columns and won>0) else 0
+            vp  = pv/tv_sum*100 if tv_sum>0 else np.nan
+            sr  = won/ts*100 if ts>0 else np.nan
+            rows.append({"Party":party,"Year":yr,"Seats Won":int(won),
+                         "Strike Rate %":round(sr,1) if pd.notna(sr) else np.nan,
+                         "Vote %":round(vp,2) if pd.notna(vp) else np.nan})
+    sr_df = pd.DataFrame(rows)
+    st.markdown('<div class="section-title">Election-by-Election Stats</div>', unsafe_allow_html=True)
+    st.dataframe(sr_df, use_container_width=True, hide_index=True)
 
-    # Trend chart
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-    tbl["Seats Won"].plot(kind='bar', ax=axes[0], color='steelblue')
-    axes[0].set_title(f"{party} — Seats Won per Election")
-    axes[0].set_xlabel("Year"); axes[0].set_ylabel("Seats")
-
-    vote_data = tbl["Vote %"].dropna()
-    if not vote_data.empty:
-        vote_data.plot(kind='line', marker='o', ax=axes[1], color='darkorange')
-        axes[1].set_title(f"{party} — Vote % Trend")
-        axes[1].set_xlabel("Year"); axes[1].set_ylabel("Vote %")
-
-    plt.tight_layout()
-    st.pyplot(fig)
-    plt.close()
+    c1,c2 = st.columns(2)
+    with c1:
+        fig,ax=plt.subplots(figsize=(7,4))
+        for i,p in enumerate(sel):
+            sub=sr_df[sr_df["Party"]==p].sort_values("Year")
+            ax.plot(sub["Year"].astype(str),sub["Seats Won"],marker='o',color=PAL[i%len(PAL)],label=p)
+        ax.set_title("Seats Won"); ax.legend(); ax.set_xlabel("Year")
+        plt.tight_layout(); st.pyplot(fig); plt.close()
+    with c2:
+        fig2,ax2=plt.subplots(figsize=(7,4))
+        for i,p in enumerate(sel):
+            sub=sr_df[sr_df["Party"]==p].sort_values("Year")
+            ax2.plot(sub["Year"].astype(str),sub["Vote %"],marker='s',linestyle='--',color=PAL[i%len(PAL)],label=p)
+        ax2.set_title("Vote %"); ax2.legend(); ax2.set_xlabel("Year")
+        plt.tight_layout(); st.pyplot(fig2); plt.close()
 
     # Win patterns
-    win_col  = smart_column_lookup(df_edited, "Win Party")
-    cons_col = smart_column_lookup(df_edited, "Constituency Name")
-    votes_col= smart_column_lookup(df_edited, "Win Vote")
-    if all(c in df_edited.columns for c in [win_col, cons_col]):
-        patterns = get_win_pattern(party, df_edited, cons_col, None, win_col)
-        if patterns:
-            pat_df = pd.DataFrame(list(patterns.items()), columns=["Constituency", "Win Pattern"])
-            with st.expander(f"Win Pattern Breakdown ({len(patterns)} constituencies)"):
-                st.dataframe(pat_df.sort_values("Win Pattern"), use_container_width=True)
+    st.markdown('<div class="section-title">Constituency Win Patterns</div>', unsafe_allow_html=True)
+    for party in sel:
+        wons = df[df[wc]==party]
+        if mc_c not in df.columns or wons.empty: continue
+        cnts = wons[mc_c].value_counts()
+        pdf = pd.DataFrame({"Constituency":cnts.index,"Times Won":cnts.values,
+                             "Win Rate %":(cnts.values/total_el*100).round(1)})
+        pdf["Pattern"] = pdf["Win Rate %"].apply(
+            lambda r: "🏰 Stronghold" if r>=75 else "🏘️ Neighbourhood" if r>=50 else "🎲 Chance" if r>=25 else "⚔️ Hostile")
+        with st.expander(f"**{party}** — {len(pdf)} constituencies"):
+            st.dataframe(pdf.sort_values("Times Won",ascending=False), use_container_width=True, hide_index=True)
 
-def render_bloc_analysis(df_edited):
-    st.markdown("#### 🏛️ Bloc-Level Analysis (LDF / UDF / NDA)")
-    bloc_stats = compute_bloc_stats(df_edited)
-    if not bloc_stats:
-        st.warning("No bloc data.")
-        return
+    # Margin distribution
+    if mg in df.columns and tv in df.columns:
+        st.markdown('<div class="section-title">Victory Margin Distribution</div>', unsafe_allow_html=True)
+        fig3,ax3=plt.subplots(figsize=(10,4))
+        for i,party in enumerate(sel):
+            data=df[df[wc]==party]
+            mgns=n(data[mg]).dropna()
+            tvs=n(data[tv]).reindex(mgns.index)
+            pct=(mgns/tvs*100).dropna()
+            if not pct.empty:
+                pct.hist(bins=20,alpha=0.6,label=party,color=PAL[i%len(PAL)],ax=ax3)
+        ax3.axvline(5,color=A1,linestyle='--',alpha=0.5,label='5%')
+        ax3.axvline(20,color=A3,linestyle='--',alpha=0.5,label='20%')
+        ax3.set_xlabel("Margin as % of Votes"); ax3.legend()
+        plt.tight_layout(); st.pyplot(fig3); plt.close()
 
-    rows = []
-    for yr, blocs in sorted(bloc_stats.items()):
-        for bloc, s in blocs.items():
-            rows.append({"Year": yr, "Bloc": bloc,
-                         "Seats Won": s["seats_won"],
-                         "Vote %": s["vote_pct"],
-                         "Seat %": s["seat_pct"]})
-    bdf = pd.DataFrame(rows)
-    st.dataframe(bdf, use_container_width=True)
 
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-    for bloc in BLOCS:
-        sub = bdf[bdf["Bloc"] == bloc].sort_values("Year")
-        axes[0].plot(sub["Year"], sub["Seats Won"], marker='o', label=bloc)
-        axes[1].plot(sub["Year"], sub["Vote %"],   marker='o', label=bloc)
-    axes[0].set_title("Seats Won by Bloc"); axes[0].legend()
-    axes[1].set_title("Vote % by Bloc");    axes[1].legend()
-    plt.tight_layout()
-    st.pyplot(fig)
-    plt.close()
-
-def render_statistical_indices(df_edited):
-    st.markdown("#### 📐 Statistical Indices")
-
-    win_col   = smart_column_lookup(df_edited, "Win Party")
-    cons_col  = smart_column_lookup(df_edited, "Constituency Name")
-    votes_col = smart_column_lookup(df_edited, "Win Vote")
-    tv_col    = smart_column_lookup(df_edited, "Votes Polled")
-    el_col    = smart_column_lookup(df_edited, "Electors")
-    margin_col= smart_column_lookup(df_edited, "Margin")
-    year_col  = "Year"
-
-    needed = [win_col, cons_col, tv_col]
-    if not all(c in df_edited.columns for c in needed):
-        st.warning("Required columns (Win Party, Constituency Name, Votes Polled) not found.")
-        return
-
-    all_years = sorted(df_edited[year_col].unique())
-    summary_rows = []
-
-    for year in all_years:
-        grp = df_edited[df_edited[year_col] == year].copy()
-        total_seats = grp[cons_col].nunique()
-        total_votes = safe_numeric(grp[tv_col]).sum()
-
-        # Per-party vote / seat shares
-        party_wins  = grp[win_col].value_counts()
-        party_votes = grp.groupby(win_col)[votes_col].apply(lambda x: safe_numeric(x).sum()) if votes_col in grp.columns else pd.Series()
-
-        seat_pcts  = (party_wins  / total_seats * 100).values.tolist()
-        vote_pcts  = (party_votes / total_votes * 100).values.tolist() if total_votes > 0 else []
-
-        # Align lengths
-        min_len = min(len(seat_pcts), len(vote_pcts))
-        seat_pcts = seat_pcts[:min_len]
-        vote_pcts = vote_pcts[:min_len]
-
-        row = {"Year": year}
-
-        # A. Disproportionality
-        if min_len > 0:
-            row["Gallagher Index"]      = round(calc_gallagher_index(vote_pcts, seat_pcts), 3)
-            row["Loosemore-Hanby"]      = round(calc_loosemore_hanby(vote_pcts, seat_pcts), 3)
-            row["Seat Bonus"]           = round(calc_seat_bonus(vote_pcts, seat_pcts), 3)
-
-        # C. Party System
-        if len(vote_pcts) > 0:
-            row["ENEP"]  = round(calc_enep(vote_pcts), 3)
-            row["ENPP"]  = round(calc_enpp(seat_pcts), 3)
-
-        # D. Turnout
-        if el_col in grp.columns:
-            total_el = safe_numeric(grp[el_col]).sum()
-            row["Turnout Rate %"] = round(calc_turnout_rate(total_votes, total_el), 2) if total_el > 0 else np.nan
-
-        # F. Fragmentation
-        if len(vote_pcts) > 0:
-            row["Fractionalization"] = round(calc_fractionalization(vote_pcts), 3)
-            row["Entropy Index"]     = round(calc_entropy_index(vote_pcts), 3)
-
-        # I. Dominance
-        if len(vote_pcts) > 0:
-            row["HHI"] = round(calc_hhi(vote_pcts), 4)
-
-        # Margin stats
-        if margin_col in grp.columns and tv_col in grp.columns:
-            margins  = safe_numeric(grp[margin_col])
-            tv_s     = safe_numeric(grp[tv_col])
-            valid    = margins.dropna()
-            if not valid.empty:
-                row["Avg Margin"]         = round(valid.mean(), 0)
-                row["Close Contest (<5%)"]= int(((margins / tv_s) < 0.05).sum())
-                row["Safety Index"]       = round((margins / tv_s * 100).mean(), 2) if not tv_s.empty else np.nan
-
-        summary_rows.append(row)
-
-    # Pedersen index (needs consecutive years)
-    if len(all_years) >= 2:
-        pedersen_vals = []
-        for i in range(1, len(all_years)):
-            y1, y2 = all_years[i-1], all_years[i]
-            g1 = df_edited[df_edited[year_col] == y1]
-            g2 = df_edited[df_edited[year_col] == y2]
-            tv1 = safe_numeric(g1[tv_col]).sum()
-            tv2 = safe_numeric(g2[tv_col]).sum()
-            if votes_col in df_edited.columns and tv1 > 0 and tv2 > 0:
-                all_parties = set(g1[win_col].unique()) | set(g2[win_col].unique())
-                vs1 = {p: safe_numeric(g1[g1[win_col]==p][votes_col]).sum() / tv1 * 100 for p in all_parties}
-                vs2 = {p: safe_numeric(g2[g2[win_col]==p][votes_col]).sum() / tv2 * 100 for p in all_parties}
-                peds = calc_pedersen_index(
-                    [vs1.get(p, 0) for p in all_parties],
-                    [vs2.get(p, 0) for p in all_parties]
-                )
-                pedersen_vals.append({"Year": y2, "Pedersen Index": round(peds, 3)})
-        if pedersen_vals:
-            ped_df = pd.DataFrame(pedersen_vals).set_index("Year")
-            st.markdown("**Electoral Volatility (Pedersen Index)**")
-            st.dataframe(ped_df, use_container_width=True)
-
-    if summary_rows:
-        idx_df = pd.DataFrame(summary_rows).set_index("Year")
-        st.dataframe(idx_df, use_container_width=True)
-
-        # Visualize key indices
-        plot_cols = [c for c in ["Gallagher Index", "ENEP", "ENPP", "Turnout Rate %", "Fractionalization"] if c in idx_df.columns]
-        if plot_cols:
-            fig, ax = plt.subplots(figsize=(12, 5))
-            for col in plot_cols:
-                ax.plot(idx_df.index, idx_df[col], marker='o', label=col)
-            ax.set_title("Key Electoral Indices over Time")
-            ax.legend(); ax.set_xlabel("Year")
-            plt.tight_layout()
-            st.pyplot(fig)
-            plt.close()
-
-def render_swing_analyzer(df_edited):
-    """Enhanced swing analyzer with transition matrix"""
-    st.markdown("#### ⚔️ Election Comparison & Swing Analysis")
-    years_available = sorted(df_edited['Year'].unique())
-    if len(years_available) < 2:
-        st.warning("Need at least 2 years of data.")
-        return
-
-    c1, c2 = st.columns(2)
+def page_families(df):
+    if "Party Family" not in df.columns: st.warning("Party Family not computed."); return
+    tv = smart_col(df,"Votes Polled")
+    seats = df.groupby(['Year','Party Family']).size().unstack(fill_value=0)
+    st.markdown('<div class="section-title">Seats Won by Party Family</div>', unsafe_allow_html=True)
+    st.dataframe(seats, use_container_width=True)
+    c1,c2=st.columns(2)
     with c1:
-        year_a = int(st.selectbox("Baseline Year", years_available, index=0, key="sw_ya"))
+        fig,ax=plt.subplots(figsize=(7,4.5))
+        for i,fam in enumerate(seats.columns):
+            ax.plot(seats.index.astype(str),seats[fam],marker='o',color=PAL[i%len(PAL)],label=fam)
+        ax.set_title("Seats by Family"); ax.legend(fontsize=7); ax.set_xlabel("Year")
+        plt.tight_layout(); st.pyplot(fig); plt.close()
     with c2:
-        year_b = int(st.selectbox("Target Year",   years_available, index=len(years_available)-1, key="sw_yb"))
+        if tv in df.columns:
+            fv=df.groupby(['Year','Party Family'])[tv].apply(lambda x: n(x).sum()).unstack(fill_value=0)
+            tot=df.groupby('Year')[tv].apply(lambda x: n(x).sum())
+            fvp=fv.div(tot,axis=0)*100
+            fig2,ax2=plt.subplots(figsize=(7,4.5))
+            for i,fam in enumerate(fvp.columns):
+                ax2.plot(fvp.index.astype(str),fvp[fam],marker='s',linestyle='--',color=PAL[i%len(PAL)],label=fam)
+            ax2.set_title("Vote % by Family"); ax2.legend(fontsize=7); ax2.set_xlabel("Year")
+            plt.tight_layout(); st.pyplot(fig2); plt.close()
 
-    if year_a == year_b:
-        st.error("Select two different years.")
-        return
 
-    df_a = df_edited[df_edited['Year'] == year_a].copy()
-    df_b = df_edited[df_edited['Year'] == year_b].copy()
+def page_blocs(df):
+    tv=smart_col(df,"Votes Polled"); mc_c=smart_col(df,"Constituency Name")
+    if 'Bloc' not in df.columns: st.warning("Bloc not computed."); return
+    rows=[]
+    for yr,grp in df.groupby('Year'):
+        ts=grp[mc_c].nunique() if mc_c in grp.columns else len(grp)
+        tvs=n(grp[tv]).sum() if tv in grp.columns else np.nan
+        for b in ['LDF','UDF','NDA']:
+            sub=grp[grp['Bloc']==b]
+            s=len(sub); v=n(sub[tv]).sum() if tv in sub.columns else 0
+            rows.append({"Year":yr,"Bloc":b,"Seats Won":s,
+                         "Vote %":round(v/tvs*100,2) if tvs and tvs>0 else np.nan,
+                         "Seat %":round(s/ts*100,2) if ts>0 else np.nan})
+    bdf=pd.DataFrame(rows)
+    st.dataframe(bdf, use_container_width=True, hide_index=True)
+    c1,c2=st.columns(2)
+    with c1:
+        fig,ax=plt.subplots(figsize=(7,4))
+        for b in ['LDF','UDF','NDA']:
+            sub=bdf[bdf['Bloc']==b].sort_values('Year')
+            ax.plot(sub['Year'].astype(str),sub['Seats Won'],marker='o',color=BLOC_COLORS[b],label=b,linewidth=2.5)
+        ax.set_title("Seats Won"); ax.legend(); ax.set_xlabel("Year")
+        plt.tight_layout(); st.pyplot(fig); plt.close()
+    with c2:
+        fig2,ax2=plt.subplots(figsize=(7,4))
+        for b in ['LDF','UDF','NDA']:
+            sub=bdf[bdf['Bloc']==b].sort_values('Year')
+            ax2.plot(sub['Year'].astype(str),sub['Vote %'],marker='s',linestyle='--',color=BLOC_COLORS[b],label=b,linewidth=2.5)
+        ax2.set_title("Vote %"); ax2.legend(); ax2.set_xlabel("Year")
+        plt.tight_layout(); st.pyplot(fig2); plt.close()
 
-    tv_col    = smart_column_lookup(df_edited, "Votes Polled")
-    cons_col  = smart_column_lookup(df_edited, "Constituency Name")
-    win_col   = smart_column_lookup(df_edited, "Win Party")
-    margin_col= smart_column_lookup(df_edited, "Margin")
+    # Alternation chart
+    st.markdown('<div class="section-title">Kerala Alternation Pattern (LDF ↔ UDF)</div>', unsafe_allow_html=True)
+    alt=bdf[bdf['Bloc'].isin(['LDF','UDF'])].pivot(index='Year',columns='Bloc',values='Seats Won').fillna(0)
+    if 'LDF' in alt.columns and 'UDF' in alt.columns:
+        fig3,ax3=plt.subplots(figsize=(12,3.5))
+        yrs=alt.index.astype(str)
+        ax3.bar(yrs,alt['LDF'],color=BLOC_COLORS['LDF'],label='LDF',alpha=0.85)
+        ax3.bar(yrs,-alt['UDF'],color=BLOC_COLORS['UDF'],label='UDF',alpha=0.85)
+        ax3.axhline(0,color=TEXT_MAIN,linewidth=0.8)
+        ax3.set_ylabel("Seats (LDF up / UDF down)"); ax3.legend()
+        plt.tight_layout(); st.pyplot(fig3); plt.close()
 
-    votes_a = safe_numeric(df_a[tv_col]).sum() if tv_col in df_a.columns else 0
-    votes_b = safe_numeric(df_b[tv_col]).sum() if tv_col in df_b.columns else 0
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric(f"Total Votes {year_a}", f"{votes_a:,.0f}")
-    m2.metric(f"Total Votes {year_b}", f"{votes_b:,.0f}")
-    m3.metric("Δ Votes", f"{votes_b - votes_a:,.0f}", delta_color="normal")
-    st.divider()
+def page_stats(df):
+    wc=smart_col(df,"Win Party"); tv=smart_col(df,"Votes Polled")
+    el=smart_col(df,"Electors"); mc_c=smart_col(df,"Constituency Name"); mg=smart_col(df,"Margin")
 
-    # Constituency flippers
-    if all(c in df_edited.columns for c in [cons_col, win_col]):
-        merge_a = df_a[[cons_col, win_col]].rename(columns={win_col: f"Winner_{year_a}"})
-        merge_b = df_b[[cons_col, win_col]].rename(columns={win_col: f"Winner_{year_b}"})
-        comp    = pd.merge(merge_a, merge_b, on=cons_col, how="inner")
-        flippers= comp[comp[f"Winner_{year_a}"] != comp[f"Winner_{year_b}"]]
-        st.markdown(f"**{len(flippers)} constituencies changed hands.**")
-        st.dataframe(flippers, use_container_width=True)
+    with st.expander("📖 Index Glossary"):
+        st.markdown("""
+| Index | Measures |
+|---|---|
+| **Gallagher** | Vote→Seat distortion |
+| **Loosemore-Hanby** | Total over/under-representation |
+| **Pedersen** | Electoral volatility between elections |
+| **ENEP / ENPP** | Effective # electoral / parliamentary parties |
+| **Turnout %** | Votes / Electors |
+| **Fractionalization** | Party system fragmentation |
+| **HHI** | Vote concentration |
+| **Close Contests** | Seats won by <5% margin |
+        """)
 
-        gainers = flippers[f"Winner_{year_b}"].value_counts().reset_index()
-        gainers.columns = ["Party", "Seats Gained"]
-        fig_flip, ax_flip = plt.subplots(figsize=(8, 4))
-        sns.barplot(data=gainers, x="Seats Gained", y="Party", palette="magma", ax=ax_flip)
-        plt.title(f"Parties gaining seats in {year_b}")
-        st.pyplot(fig_flip)
-        plt.close()
+    if wc not in df.columns or tv not in df.columns: st.warning("Need Win Party + Votes Polled."); return
+    all_years=sorted(df['Year'].unique()); rows=[]
+    for yr in all_years:
+        grp=df[df['Year']==yr]; ts=grp[mc_c].nunique() if mc_c in grp.columns else len(grp)
+        tvs=n(grp[tv]).sum()
+        pw=grp[wc].value_counts(); pv=grp.groupby(wc)[tv].apply(lambda x: n(x).sum())
+        sp=(pw/ts*100).values.tolist(); vp=(pv/tvs*100).values.tolist() if tvs>0 else []
+        nl=min(len(sp),len(vp)); sp,vp=sp[:nl],vp[:nl]
+        row={"Year":yr}
+        if nl>0:
+            row["Gallagher"]=round(gallagher(vp,sp),3)
+            row["Loosemore-Hanby"]=round(loosemore(vp,sp),3)
+            row["ENEP"]=round(enep(vp),3); row["ENPP"]=round(enpp(sp),3)
+            row["HHI"]=round(hhi(vp),4); row["Frac."]=round(frac(vp),3)
+        if el in grp.columns:
+            te=n(grp[el]).sum()
+            row["Turnout %"]=round(tvs/te*100,2) if te>0 else np.nan
+        if mg in grp.columns:
+            ms=n(grp[mg]); tvss=n(grp[tv])
+            row["Avg Margin"]=round(ms.mean(),0)
+            row["Close (<5%)"]=int(((ms/tvss)<0.05).sum())
+        rows.append(row)
+    idx=pd.DataFrame(rows).set_index("Year")
+    st.dataframe(idx, use_container_width=True)
 
-        # Transition Matrix
-        st.markdown("**🔄 Transition Matrix (who beat whom)**")
-        tm = build_transition_matrix(df_a, df_b, cons_col, win_col)
-        fig_tm, ax_tm = plt.subplots(figsize=(min(16, max(6, len(tm.columns))),
-                                              min(14, max(5, len(tm.index)))))
-        sns.heatmap(tm, annot=True, fmt='d', cmap='YlOrRd', ax=ax_tm)
-        ax_tm.set_title(f"Seat Transition: {year_a} → {year_b}")
-        ax_tm.set_xlabel(f"Winner {year_b}")
-        ax_tm.set_ylabel(f"Winner {year_a}")
-        plt.tight_layout()
-        st.pyplot(fig_tm)
-        plt.close()
+    # Pedersen
+    if len(all_years)>=2:
+        pr=[]
+        for i in range(1,len(all_years)):
+            y1,y2=all_years[i-1],all_years[i]
+            g1=df[df['Year']==y1]; g2=df[df['Year']==y2]
+            t1=n(g1[tv]).sum(); t2=n(g2[tv]).sum()
+            if t1>0 and t2>0:
+                pts=set(g1[wc].unique())|set(g2[wc].unique())
+                d1={p:n(g1[g1[wc]==p][tv]).sum()/t1*100 for p in pts}
+                d2={p:n(g2[g2[wc]==p][tv]).sum()/t2*100 for p in pts}
+                pr.append({"Year":y2,"Pedersen":round(pedersen(d1,d2),3)})
+        if pr:
+            pf=pd.DataFrame(pr)
+            fig,ax=plt.subplots(figsize=(10,3))
+            ax.bar(pf['Year'].astype(str),pf['Pedersen'],color=A1,alpha=0.85)
+            ax.set_title("Electoral Volatility (Pedersen Index)"); ax.set_xlabel("Year")
+            plt.tight_layout(); st.pyplot(fig); plt.close()
 
-        # Bloc-level swing
-        st.markdown("**Bloc-level Seat Changes**")
-        comp["Bloc_A"] = comp[f"Winner_{year_a}"].apply(assign_bloc)
-        comp["Bloc_B"] = comp[f"Winner_{year_b}"].apply(assign_bloc)
-        bloc_trans = pd.crosstab(comp["Bloc_A"], comp["Bloc_B"])
-        st.dataframe(bloc_trans, use_container_width=True)
+    pcols=[c for c in ["Gallagher","ENEP","ENPP","Turnout %","Frac."] if c in idx.columns]
+    if pcols:
+        fig2,axes=plt.subplots(1,len(pcols),figsize=(14,3.5))
+        if len(pcols)==1: axes=[axes]
+        for ax,col in zip(axes,pcols):
+            ax.plot(idx.index.astype(str),idx[col],marker='o',color=GOLD,linewidth=2)
+            ax.fill_between(idx.index.astype(str),idx[col],alpha=0.15,color=GOLD)
+            ax.set_title(col); ax.tick_params(axis='x',rotation=45)
+        plt.tight_layout(); st.pyplot(fig2); plt.close()
 
-    # Margin distribution comparison
-    if margin_col in df_a.columns and margin_col in df_b.columns:
-        fig_m, ax_m = plt.subplots(figsize=(9, 4))
-        safe_numeric(df_a[margin_col]).dropna().hist(bins=20, alpha=0.6, label=str(year_a), ax=ax_m, color='steelblue')
-        safe_numeric(df_b[margin_col]).dropna().hist(bins=20, alpha=0.6, label=str(year_b), ax=ax_m, color='darkorange')
-        ax_m.set_title("Margin Distribution Comparison")
-        ax_m.legend(); ax_m.set_xlabel("Margin")
-        st.pyplot(fig_m)
-        plt.close()
 
-def render_regional_analysis(df_edited):
-    st.markdown("#### 🗺️ Regional Analysis (North / South / Central)")
-    dist_col = smart_column_lookup(df_edited, "District")
-    if dist_col not in df_edited.columns:
-        st.info("No 'District' column found. Upload data with district information for regional analysis.")
-        return
+def page_swing(df):
+    cc=smart_col(df,"Constituency Name"); wc=smart_col(df,"Win Party")
+    tv=smart_col(df,"Votes Polled"); mg=smart_col(df,"Margin")
+    years=sorted(df['Year'].unique())
+    if len(years)<2: st.warning("Need ≥2 years."); return
 
-    NORTH_DISTRICTS  = ["Kasargod", "Kannur", "Wayanad", "Kozhikode", "Malappuram"]
-    SOUTH_DISTRICTS  = ["Thiruvananthapuram", "Kollam", "Pathanamthitta", "Alappuzha"]
-    CENTRAL_DISTRICTS= ["Thrissur", "Palakkad", "Ernakulam", "Idukki", "Kottayam"]
+    c1,c2=st.columns(2)
+    # Use integer years in selectbox — fix for decimal display
+    year_opts = [str(y) for y in years]
+    with c1: ya=st.selectbox("Baseline Year", year_opts, index=0, key="ya")
+    with c2: yb=st.selectbox("Target Year",   year_opts, index=len(year_opts)-1, key="yb")
+    ya,yb=int(ya),int(yb)
+    if ya==yb: st.error("Select two different years."); return
 
-    def get_region(d):
-        if d in NORTH_DISTRICTS:   return "North"
-        if d in SOUTH_DISTRICTS:   return "South"
-        if d in CENTRAL_DISTRICTS: return "Central"
+    da=df[df['Year']==ya]; db=df[df['Year']==yb]
+    va=n(da[tv]).sum() if tv in da.columns else 0
+    vb=n(db[tv]).sum() if tv in db.columns else 0
+    st.markdown('<div class="metric-row">'
+        + mc(f"Votes {ya}", f"{va/1e6:.2f}M")
+        + mc(f"Votes {yb}", f"{vb/1e6:.2f}M")
+        + mc("Vote Δ", f"{(vb-va)/1e6:+.2f}M")
+        + '</div>', unsafe_allow_html=True)
+
+    if not all(c in df.columns for c in [cc,wc]): return
+    ma=da[[cc,wc]].rename(columns={wc:f"Winner {ya}"})
+    mb=db[[cc,wc]].rename(columns={wc:f"Winner {yb}"})
+    comp=pd.merge(ma,mb,on=cc,how="inner")
+    flipped=comp[comp[f"Winner {ya}"]!=comp[f"Winner {yb}"]].copy()
+
+    st.markdown(f'<div class="section-title">Constituency Flips — {len(flipped)} of {len(comp)} seats changed</div>', unsafe_allow_html=True)
+    if not flipped.empty:
+        flipped["Bloc Before"]=flipped[f"Winner {ya}"].apply(assign_bloc)
+        flipped["Bloc After"]=flipped[f"Winner {yb}"].apply(assign_bloc)
+        st.dataframe(flipped, use_container_width=True, hide_index=True)
+        c1,c2=st.columns(2)
+        with c1:
+            g=flipped[f"Winner {yb}"].value_counts().head(10).reset_index()
+            g.columns=["Party","Gained"]
+            fig,ax=plt.subplots(figsize=(6,4))
+            sns.barplot(data=g,x="Gained",y="Party",palette="magma",ax=ax)
+            ax.set_title(f"Gained in {yb}"); plt.tight_layout(); st.pyplot(fig); plt.close()
+        with c2:
+            lo=flipped[f"Winner {ya}"].value_counts().head(10).reset_index()
+            lo.columns=["Party","Lost"]
+            fig2,ax2=plt.subplots(figsize=(6,4))
+            sns.barplot(data=lo,x="Lost",y="Party",palette="flare",ax=ax2)
+            ax2.set_title(f"Lost in {yb}"); plt.tight_layout(); st.pyplot(fig2); plt.close()
+
+    st.markdown('<div class="section-title">Transition Matrix</div>', unsafe_allow_html=True)
+    tm=pd.crosstab(comp[f"Winner {ya}"],comp[f"Winner {yb}"])
+    fig_tm,ax_tm=plt.subplots(figsize=(min(16,max(7,len(tm.columns)*0.9)),min(14,max(5,len(tm.index)*0.8))))
+    sns.heatmap(tm,annot=True,fmt='d',cmap='YlOrBr',linewidths=0.3,linecolor='#1e3250',ax=ax_tm)
+    ax_tm.set_title(f"Seat Transition: {ya} → {yb}")
+    plt.tight_layout(); st.pyplot(fig_tm); plt.close()
+
+    if mg in df.columns:
+        st.markdown('<div class="section-title">Margin Distributions</div>', unsafe_allow_html=True)
+        fig_m,ax_m=plt.subplots(figsize=(10,3.5))
+        n(da[mg]).dropna().hist(bins=25,alpha=0.65,label=str(ya),ax=ax_m,color=A2)
+        n(db[mg]).dropna().hist(bins=25,alpha=0.65,label=str(yb),ax=ax_m,color=A1)
+        ax_m.set_xlabel("Margin (Votes)"); ax_m.legend()
+        plt.tight_layout(); st.pyplot(fig_m); plt.close()
+
+
+def page_constituency(df):
+    cc=smart_col(df,"Constituency Name"); wc=smart_col(df,"Win Party")
+    tv=smart_col(df,"Votes Polled"); el=smart_col(df,"Electors"); mg=smart_col(df,"Margin")
+    cat=smart_col(df,"Category")
+    if cc not in df.columns: st.warning("No Constituency Name column."); return
+
+    sel=st.selectbox("Select Constituency", sorted(df[cc].dropna().unique()), key="csel")
+    cdf=df[df[cc]==sel].sort_values('Year')
+    if cdf.empty: st.info("No data."); return
+
+    catv=cdf[cat].iloc[-1] if cat in cdf.columns else "—"
+    i1,i2,i3,i4=st.columns(4)
+    i1.metric("Category", str(catv))
+    i2.metric("Elections", str(len(cdf)))
+    if tv in cdf.columns: i3.metric("Latest Votes Polled", f"{n(cdf[tv]).iloc[-1]:,.0f}")
+    if wc in cdf.columns: i4.metric("Last Winner", str(cdf[wc].iloc[-1]))
+
+    show=[c for c in ['Year','Win Party','Win Alliance','Win Vote','Run Party','Run Alliance','Run vote','Margin','Votes Polled'] if c in cdf.columns]
+    st.dataframe(cdf[show], use_container_width=True, hide_index=True)
+
+    c1,c2=st.columns(2)
+    with c1:
+        if wc in cdf.columns:
+            wins=cdf[wc].value_counts()
+            fig,ax=plt.subplots(figsize=(6,3.5))
+            colors=[BLOC_COLORS.get(assign_bloc(p),MUTED) for p in wins.index]
+            ax.bar(wins.index,wins.values,color=colors)
+            ax.set_title(f"{sel} — Wins by Party"); plt.xticks(rotation=30,ha='right')
+            plt.tight_layout(); st.pyplot(fig); plt.close()
+    with c2:
+        if mg in cdf.columns:
+            fig2,ax2=plt.subplots(figsize=(6,3.5))
+            ax2.bar(cdf['Year'].astype(str),n(cdf[mg]),color=GOLD,alpha=0.8)
+            ax2.set_title(f"{sel} — Victory Margin")
+            plt.tight_layout(); st.pyplot(fig2); plt.close()
+
+    if tv in cdf.columns and el in cdf.columns:
+        to=(n(cdf[tv])/n(cdf[el])*100).fillna(0)
+        fig3,ax3=plt.subplots(figsize=(12,2.5))
+        ax3.fill_between(cdf['Year'].astype(str),to,alpha=0.25,color=A3)
+        ax3.plot(cdf['Year'].astype(str),to,marker='o',color=A3,linewidth=2)
+        ax3.set_title(f"{sel} — Turnout %"); ax3.set_ylim(40,100)
+        plt.tight_layout(); st.pyplot(fig3); plt.close()
+
+
+def page_regional(df):
+    dc=smart_col(df,"District"); wc=smart_col(df,"Win Party"); tv=smart_col(df,"Votes Polled")
+    NORTH=["Kasaragod","Kannur","Wayanad","Kozhikode","Malappuram"]
+    SOUTH=["Thiruvananthapuram","Kollam","Pathanamthitta","Alappuzha"]
+    CENTRAL=["Thrissur","Palakkad","Ernakulam","Idukki","Kottayam"]
+    def region(d):
+        if d in NORTH: return "North"
+        if d in SOUTH: return "South"
+        if d in CENTRAL: return "Central"
         return "Other"
 
-    df_reg = df_edited.copy()
-    df_reg["Region"] = df_reg[dist_col].astype(str).apply(get_region)
-
-    win_col  = smart_column_lookup(df_edited, "Win Party")
-    tv_col   = smart_column_lookup(df_edited, "Votes Polled")
-
-    for party in ["INC", "CPM", "CPI"]:
-        won = df_reg[df_reg[win_col] == party] if win_col in df_reg.columns else pd.DataFrame()
-        if won.empty:
-            continue
-        region_wins = won.groupby(["Year", "Region"]).size().unstack(fill_value=0)
-        st.markdown(f"**{party} — Wins by Region per Election**")
-        st.dataframe(region_wins, use_container_width=True)
-
-def render_reserved_seats(df_edited):
-    st.markdown("#### 🏷️ Reserved Constituency Analysis (SC/ST)")
-    res_col = smart_column_lookup(df_edited, "Category")
-    if res_col not in df_edited.columns:
-        res_col = smart_column_lookup(df_edited, "Reserved")
-    if res_col not in df_edited.columns:
-        st.info("No 'Category' / 'Reserved' column found for reserved seat analysis.")
+    if dc not in df.columns:
+        st.info("No 'District' column. Showing top-party breakdown.")
+        if wc in df.columns:
+            tp=df.groupby(['Year',wc]).size().reset_index(name='S')
+            tp=tp[tp['S']>=3].pivot(index='Year',columns=wc,values='S').fillna(0)
+            st.dataframe(tp.astype(int), use_container_width=True)
         return
 
-    reserved = df_edited[df_edited[res_col].str.upper().isin(["SC", "ST"])] if res_col in df_edited.columns else pd.DataFrame()
-    general  = df_edited[~df_edited[res_col].str.upper().isin(["SC", "ST"])] if res_col in df_edited.columns else pd.DataFrame()
+    df2=df.copy(); df2['Region']=df2[dc].astype(str).apply(region)
+    for party in ["INC","CPM","CPI"]:
+        if wc not in df2.columns: continue
+        sub=df2[df2[wc]==party].groupby(['Year','Region']).size().unstack(fill_value=0)
+        if sub.empty: continue
+        st.markdown(f'<div class="section-title">{party} — Regional Wins</div>', unsafe_allow_html=True)
+        fig,ax=plt.subplots(figsize=(10,3.5))
+        rc={'North':A2,'Central':GOLD,'South':A3,'Other':MUTED}
+        for r in ['North','Central','South','Other']:
+            if r in sub.columns:
+                ax.plot(sub.index.astype(str),sub[r],marker='o',label=r,color=rc.get(r,MUTED))
+        ax.set_title(f"{party} Wins by Region"); ax.legend(); ax.set_xlabel("Year")
+        plt.tight_layout(); st.pyplot(fig); plt.close()
 
-    win_col  = smart_column_lookup(df_edited, "Win Party")
-    if win_col not in df_edited.columns:
-        st.info("Win Party column not found.")
-        return
 
-    c1, c2 = st.columns(2)
+def page_reserved(df):
+    cat=smart_col(df,"Category"); wc=smart_col(df,"Win Party")
+    if cat not in df.columns: st.info("No 'Category' column."); return
+    if wc not in df.columns: st.info("No Win Party column."); return
+    res=df[df[cat].astype(str).str.upper().isin(["SC","ST"])]
+    gen=df[~df[cat].astype(str).str.upper().isin(["SC","ST"])]
+    c1,c2=st.columns(2)
     with c1:
-        st.markdown("**Reserved Seats — Top Winners**")
-        if not reserved.empty:
-            st.dataframe(reserved[win_col].value_counts().head(15).reset_index(), use_container_width=True)
+        st.markdown('<div class="section-title">Reserved (SC/ST)</div>', unsafe_allow_html=True)
+        if not res.empty:
+            tr=res[wc].value_counts().head(12).reset_index(); tr.columns=["Party","Seats"]
+            fig,ax=plt.subplots(figsize=(5,4))
+            ax.barh(tr["Party"][::-1],tr["Seats"][::-1],color=A1)
+            ax.set_xlabel("Seats"); plt.tight_layout(); st.pyplot(fig); plt.close()
+            st.dataframe(tr, use_container_width=True, hide_index=True)
     with c2:
-        st.markdown("**General Seats — Top Winners**")
-        if not general.empty:
-            st.dataframe(general[win_col].value_counts().head(15).reset_index(), use_container_width=True)
+        st.markdown('<div class="section-title">General Seats</div>', unsafe_allow_html=True)
+        if not gen.empty:
+            tg=gen[wc].value_counts().head(12).reset_index(); tg.columns=["Party","Seats"]
+            fig2,ax2=plt.subplots(figsize=(5,4))
+            ax2.barh(tg["Party"][::-1],tg["Seats"][::-1],color=A2)
+            ax2.set_xlabel("Seats"); plt.tight_layout(); st.pyplot(fig2); plt.close()
+            st.dataframe(tg, use_container_width=True, hide_index=True)
 
-# ============================================================
-# MAIN APP
-# ============================================================
+    if not res.empty and not gen.empty:
+        both=set(res[wc].unique())&set(gen[wc].unique())
+        cmp=[{"Party":p,"Reserved":(res[wc]==p).sum(),"General":(gen[wc]==p).sum()} for p in sorted(both)]
+        cdf=pd.DataFrame(cmp).sort_values("General",ascending=False).head(12)
+        fig3,ax3=plt.subplots(figsize=(10,4))
+        x=np.arange(len(cdf))
+        ax3.bar(x-0.2,cdf["Reserved"],0.4,label="Reserved",color=A1,alpha=0.9)
+        ax3.bar(x+0.2,cdf["General"],0.4,label="General",color=A2,alpha=0.9)
+        ax3.set_xticks(x); ax3.set_xticklabels(cdf["Party"],rotation=30,ha='right')
+        ax3.legend(); ax3.set_title("Reserved vs General Seat Wins")
+        plt.tight_layout(); st.pyplot(fig3); plt.close()
 
-st.title("📊 Kerala Election Insights & Trends Hub")
 
-uploaded_files = st.file_uploader(
-    "Upload Election Data (Excel/CSV)",
-    accept_multiple_files=True,
-    type=['xlsx', 'xls', 'csv']
-)
+# ─────────────────────────────────────────────
+# 9. MAIN APP
+# ─────────────────────────────────────────────
+st.markdown("""
+<div class="atlas-header">
+  <div class="atlas-title">🗳️ Kerala Election Atlas</div>
+  <div class="atlas-subtitle">Assembly Elections 1957 – 2021 · Constituency-Level Intelligence</div>
+</div>
+""", unsafe_allow_html=True)
 
-if uploaded_files:
-    with st.spinner("Processing data..."):
-        master_df = load_and_combine_data(uploaded_files)
+with st.sidebar:
+    st.markdown("### ⚙️ Configuration")
+    if not api_key:
+        api_key = st.text_input("Gemini API Key", type="password")
+    st.divider()
+    uploaded_files = st.file_uploader("Upload Excel/CSV", accept_multiple_files=True, type=['xlsx','xls','csv'])
 
-    if master_df is not None:
-        st.toast(f"Data Loaded! {len(master_df)} records.", icon="✅")
+if not uploaded_files:
+    st.markdown("""
+    <div style="text-align:center;padding:4rem 2rem;opacity:0.6;">
+      <div style="font-size:3rem;">🗺️</div>
+      <div style="font-family:'Playfair Display',serif;font-size:1.4rem;color:#c9a84c;margin-top:0.5rem;">Upload election data to begin</div>
+      <div style="font-size:0.85rem;color:#8fa3c0;margin-top:0.4rem;">Supports .xlsx (multi-sheet per year) or .csv</div>
+    </div>""", unsafe_allow_html=True)
+    st.stop()
 
-        # --- CUSTOM METRICS ---
-        if "custom_metrics" not in st.session_state:
-            st.session_state.custom_metrics = {}
+with st.spinner("Loading..."):
+    master_df = load_data(uploaded_files)
 
-        with st.sidebar.expander("🛠️ Build Custom Metrics", expanded=False):
-            st.caption("Create new columns using plain English.")
-            new_metric_name = st.text_input("Name (e.g., Win_Margin_Percent)")
-            new_metric_desc = st.text_area("Logic (e.g., Win Vote minus Run Vote divided by Votes Polled)")
-            if st.button("Draft Metric"):
-                if new_metric_name and new_metric_desc:
-                    with st.spinner("Translating logic..."):
-                        code = generate_custom_metric_code(master_df.head(), new_metric_name, new_metric_desc)
-                        st.session_state.draft_code = code
-                        st.session_state.draft_name = new_metric_name
-                        st.rerun()
-            if "draft_code" in st.session_state:
-                st.write("---")
-                st.write("**Preview Code:**")
-                st.code(st.session_state.draft_code, language="python")
-                try:
-                    test_df = master_df.head(50).copy()
-                    exec_globals = {"df": test_df, "pd": pd, "smart_lookup": smart_column_lookup}
-                    exec(st.session_state.draft_code, exec_globals)
-                    st.success("Test Calculation Successful!")
-                    st.dataframe(test_df[[st.session_state.draft_name]].head(3))
-                    if st.button("✅ Save Metric"):
-                        st.session_state.custom_metrics[st.session_state.draft_name] = st.session_state.draft_code
-                        del st.session_state.draft_code
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"Error in logic: {e}")
+if master_df is None: st.error("Could not load data."); st.stop()
+st.toast(f"✅ {len(master_df):,} records across {master_df['Year'].nunique()} elections", icon="🗳️")
 
-        if not master_df.empty and st.session_state.custom_metrics:
-            for name, code in st.session_state.custom_metrics.items():
-                try:
-                    exec_globals = {"df": master_df, "pd": pd, "smart_lookup": smart_column_lookup}
-                    exec(code, exec_globals)
-                except Exception as e:
-                    st.warning(f"Could not apply metric '{name}': {e}")
-            st.sidebar.success(f"Active Metrics: {list(st.session_state.custom_metrics.keys())}")
-
-        # --- SIDEBAR FILTERS ---
-        st.sidebar.header("🔍 Global Filters")
+# Custom metrics
+if "custom_metrics" not in st.session_state: st.session_state.custom_metrics = {}
+with st.sidebar.expander("🛠️ Custom Metrics", expanded=False):
+    nm=st.text_input("Column Name"); nd=st.text_area("Logic (plain English)")
+    if st.button("Draft"):
+        if nm and nd:
+            with st.spinner("Translating..."):
+                code=gen_metric_code(master_df.head(),nm,nd)
+                st.session_state.draft_code=code; st.session_state.draft_name=nm; st.rerun()
+    if "draft_code" in st.session_state:
+        st.code(st.session_state.draft_code,language="python")
         try:
-            master_df['Year'] = pd.to_numeric(master_df['Year'])
-            min_year, max_year = int(master_df['Year'].min()), int(master_df['Year'].max())
-            selected_years = st.sidebar.slider("Year Range", min_year, max_year, (min_year, max_year))
-            df_filtered = master_df[(master_df['Year'] >= selected_years[0]) & (master_df['Year'] <= selected_years[1])]
-        except:
-            st.sidebar.warning("Year column issue. Showing all data.")
-            df_filtered = master_df
+            tdf=master_df.head(50).copy()
+            exec_g={"df":tdf,"pd":pd,"smart_lookup":smart_col}
+            exec(st.session_state.draft_code,exec_g); st.success("✅ Test passed")
+            if st.button("Save"):
+                st.session_state.custom_metrics[st.session_state.draft_name]=st.session_state.draft_code
+                del st.session_state.draft_code; st.rerun()
+        except Exception as e: st.error(str(e))
 
-        dist_col = smart_column_lookup(df_filtered, "District")
-        if dist_col in df_filtered.columns:
-            districts = sorted(df_filtered[dist_col].dropna().astype(str).unique())
-            selected_districts = st.sidebar.multiselect("Filter Districts", options=districts)
-            if selected_districts:
-                df_filtered = df_filtered[df_filtered[dist_col].isin(selected_districts)]
+for name,code in st.session_state.custom_metrics.items():
+    try: exec(code,{"df":master_df,"pd":pd,"smart_lookup":smart_col})
+    except Exception as e: st.warning(f"Metric '{name}': {e}")
 
-        cons_col = smart_column_lookup(df_filtered, "Constituency Name")
-        if cons_col in df_filtered.columns:
-            constituencies = sorted(df_filtered[cons_col].dropna().astype(str).unique())
-            selected_cons = st.sidebar.multiselect("Filter Constituencies", options=constituencies)
-            if selected_cons:
-                df_filtered = df_filtered[df_filtered[cons_col].isin(selected_cons)]
+# Filters
+st.sidebar.divider()
+st.sidebar.markdown("### 🔍 Filters")
+years_avail=sorted(master_df['Year'].unique())
+sel_years=st.sidebar.select_slider("Election Years", options=years_avail, value=(years_avail[0],years_avail[-1]))
+df_f=master_df[(master_df['Year']>=sel_years[0])&(master_df['Year']<=sel_years[1])].copy()
 
-        party_col = smart_column_lookup(df_filtered, "Party")
-        if party_col in df_filtered.columns:
-            parties = sorted(df_filtered[party_col].dropna().astype(str).unique())
-            selected_parties = st.sidebar.multiselect("Filter Parties", options=parties)
-            if selected_parties:
-                df_filtered = df_filtered[df_filtered[party_col].isin(selected_parties)]
+if 'Bloc' in df_f.columns:
+    ba=sorted(df_f['Bloc'].dropna().unique())
+    sb=st.sidebar.multiselect("Blocs",ba,default=ba)
+    if sb: df_f=df_f[df_f['Bloc'].isin(sb)]
 
-        # Bloc filter
-        if "Bloc" in df_filtered.columns:
-            all_blocs = sorted(df_filtered["Bloc"].dropna().unique())
-            selected_blocs = st.sidebar.multiselect("Filter Blocs (LDF/UDF/NDA)", options=all_blocs)
-            if selected_blocs:
-                df_filtered = df_filtered[df_filtered["Bloc"].isin(selected_blocs)]
+cat_c=smart_col(df_f,"Category")
+if cat_c in df_f.columns:
+    cats=sorted(df_f[cat_c].dropna().unique())
+    sc=st.sidebar.multiselect("Constituency Type",cats,default=cats)
+    if sc: df_f=df_f[df_f[cat_c].isin(sc)]
 
-        # Party family filter
-        if "Party Family" in df_filtered.columns:
-            all_families = sorted(df_filtered["Party Family"].dropna().unique())
-            selected_families = st.sidebar.multiselect("Filter Party Families", options=all_families)
-            if selected_families:
-                df_filtered = df_filtered[df_filtered["Party Family"].isin(selected_families)]
+st.sidebar.caption(f"**{len(df_f):,}** rows · {df_f['Year'].nunique()} elections")
 
-        st.sidebar.caption(f"Showing {len(df_filtered)} rows")
+df_edited=df_f.copy()
+with st.expander("📝 View & Edit Raw Data", expanded=False):
+    df_edited=st.data_editor(df_f,num_rows="dynamic",use_container_width=True,key="ed")
+    st.download_button("📥 Download CSV",df_edited.to_csv(index=False).encode(),"election_data.csv","text/csv")
 
-        # --- DATA EDITOR ---
-        st.subheader("📝 Data Editor & Analysis")
-        with st.expander("View & Edit Raw Data (Add Rows/Change Values)", expanded=False):
-            df_edited = st.data_editor(
-                df_filtered, num_rows="dynamic",
-                use_container_width=True, key="editor_main"
-            )
-            csv_data = df_edited.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download Modified Data", csv_data, "modified_election_data.csv", "text/csv")
+# ── NAVIGATION ───────────────────────────────
+NAV=[("🏠","Overview"),("🎯","Party Analysis"),("👨‍👩‍👧","Party Families"),("🏛️","Blocs"),
+     ("📐","Statistics"),("⚔️","Swing Analyzer"),("📍","Constituency"),
+     ("🗺️","Regional"),("🏷️","Reserved Seats"),("🤖","AI Analyst")]
 
-        # --- TABS ---
-        tab_trends, tab_parties, tab_families, tab_blocs, tab_stats, tab_swing, tab_regional, tab_reserved, tab_ai, tab_data = st.tabs([
-            "📈 Dashboard",
-            "🎯 Party Analysis",
-            "👨‍👩‍👧 Party Families",
-            "🏛️ Bloc Analysis",
-            "📐 Statistical Indices",
-            "⚔️ Swing Analyzer",
-            "🗺️ Regional Trends",
-            "🏷️ Reserved Seats",
-            "🤖 AI Analyst",
-            "📋 Data Stats"
-        ])
+if "tab" not in st.session_state: st.session_state.tab="Overview"
 
-        # TAB 1: DASHBOARD
-        with tab_trends:
-            st.subheader("Visual Analysis")
-            default_metrics = ["Votes", "Margin", "Electors"]
-            custom_keys = list(st.session_state.custom_metrics.keys())
-            available_metrics = list(set(default_metrics + custom_keys))
+cols=st.columns(len(NAV))
+for col,(icon,name) in zip(cols,NAV):
+    with col:
+        label=f"{icon} {name}"
+        if st.button(label,key=f"nav_{name}",use_container_width=True):
+            st.session_state.tab=name; st.rerun()
 
-            c1, c2, c3, c4 = st.columns(4)
-            with c1: chart_type = st.selectbox("Chart Type", ["Line (Time Series)", "Bar (Comparison)", "Pie (Share)", "Box (Distribution)"])
-            with c2: metric    = st.selectbox("Metric", available_metrics, index=0)
-            with c3: split_by  = st.selectbox("Category / Split", ["Party", "Bloc", "Party Family", "Alliance", "Constituency Name", "District", "None"], index=0)
-            with c4: agg_type  = st.selectbox("Aggregation", ["Sum", "Average", "Maximum", "Count"], index=0)
+# Active indicator
+st.markdown(f"""
+<div style="display:flex;gap:0.3rem;margin:-0.5rem 0 0.8rem;padding:0 0.1rem;">
+{''.join(f'<div style="height:3px;flex:1;background:{"#c9a84c" if n==st.session_state.tab else "#1e3250"};border-radius:2px;"></div>' for _,n in NAV)}
+</div>
+""", unsafe_allow_html=True)
 
-            agg_map = {"Sum": "sum", "Average": "mean", "Maximum": "max", "Count": "count"}
-            metric_col = smart_column_lookup(df_edited, metric)
-            cat_col    = smart_column_lookup(df_edited, split_by) if split_by != "None" else None
-            year_col   = "Year"
+st.divider()
+page=st.session_state.tab
 
-            if metric_col:
-                try:
-                    df_edited[metric_col] = pd.to_numeric(df_edited[metric_col], errors='coerce')
-                    fig, ax = plt.subplots(figsize=(10, 6))
-
-                    if "Line" in chart_type:
-                        if year_col:
-                            group_cols = [year_col] + ([cat_col] if cat_col else [])
-                            data = df_edited.groupby(group_cols)[metric_col].agg(agg_map[agg_type]).reset_index()
-                            if cat_col:
-                                sns.lineplot(data=data, x=year_col, y=metric_col, hue=cat_col, marker="o", ax=ax)
-                            else:
-                                sns.lineplot(data=data, x=year_col, y=metric_col, marker="o", ax=ax)
-                            plt.title(f"{agg_type} {metric} over Years")
-
-                    elif "Bar" in chart_type:
-                        if not cat_col:
-                            st.warning("⚠️ Select a Category for Bar Charts.")
-                        else:
-                            data = df_edited.groupby(cat_col)[metric_col].agg(agg_map[agg_type]).reset_index()
-                            data = data.sort_values(metric_col, ascending=False).head(15)
-                            sns.barplot(data=data, x=metric_col, y=cat_col, palette="viridis", ax=ax)
-                            plt.title(f"Top 15 {split_by} by {agg_type} {metric}")
-                            ax.bar_label(ax.containers[0], fmt='%.0f', padding=3)
-
-                    elif "Pie" in chart_type:
-                        if not cat_col:
-                            st.warning("⚠️ Select a Category for Pie Charts.")
-                        else:
-                            data = df_edited.groupby(cat_col)[metric_col].sum().reset_index()
-                            data = data.sort_values(metric_col, ascending=False).head(10)
-                            ax.pie(data[metric_col], labels=data[cat_col], autopct='%1.1f%%', startangle=140)
-                            plt.title(f"{metric} Share (Top 10)")
-
-                    elif "Box" in chart_type:
-                        if not cat_col:
-                            sns.boxplot(y=df_edited[metric_col], ax=ax)
-                        else:
-                            top_cats = df_edited[cat_col].value_counts().head(10).index
-                            sub_data = df_edited[df_edited[cat_col].isin(top_cats)]
-                            sns.boxplot(data=sub_data, x=cat_col, y=metric_col, ax=ax)
-                            plt.xticks(rotation=45)
-                        plt.title(f"Distribution of {metric}")
-
-                    plt.tight_layout()
-                    st.pyplot(fig)
-                    plt.close()
-                except Exception as e:
-                    st.error(f"Plot Error: {e}")
-
-        # TAB 2: PARTY ANALYSIS (NEW — from PDF Section C)
-        with tab_parties:
-            st.subheader("🎯 Individual Party Analysis")
-            st.info("Detailed analysis for the 6 key parties listed in the PDF (CPI, CPM, INC, ML, KCM, KCJ), plus any custom party.")
-
-            win_col_check = smart_column_lookup(df_edited, "Win Party")
-            if win_col_check not in df_edited.columns:
-                st.warning("'Win Party' column not found. Please verify column names.")
-            else:
-                available_parties_in_data = sorted(df_edited[win_col_check].dropna().unique().tolist())
-                # Pre-select the 6 PDF parties that exist in data
-                default_sel = [p for p in INDIVIDUAL_PARTIES if p in available_parties_in_data]
-                selected_analysis_parties = st.multiselect(
-                    "Select parties to analyze", available_parties_in_data,
-                    default=default_sel
-                )
-                for party in selected_analysis_parties:
-                    with st.expander(f"📊 {party}", expanded=(party in INDIVIDUAL_PARTIES[:2])):
-                        render_party_analysis(df_edited, party)
-
-                # Strike rate table for all selected parties
-                st.divider()
-                st.markdown("#### 🎯 Strike Rate Comparison")
-                sr_rows = []
-                for party in selected_analysis_parties:
-                    for year, grp in df_edited.groupby("Year"):
-                        won  = (grp[win_col_check] == party).sum()
-                        cont = len(grp)  # approximate: seats per year = contested
-                        sr   = calc_strike_rate(won, cont)
-                        sr_rows.append({"Party": party, "Year": year, "Seats Won": won,
-                                        "Contested (approx)": cont, "Strike Rate %": round(sr, 1) if sr else np.nan})
-                if sr_rows:
-                    sr_df = pd.DataFrame(sr_rows)
-                    st.dataframe(sr_df, use_container_width=True)
-
-                    fig_sr, ax_sr = plt.subplots(figsize=(11, 5))
-                    for p in selected_analysis_parties:
-                        sub = sr_df[sr_df["Party"] == p].sort_values("Year")
-                        ax_sr.plot(sub["Year"], sub["Strike Rate %"], marker='o', label=p)
-                    ax_sr.set_title("Strike Rate (%) over Elections")
-                    ax_sr.legend(); ax_sr.set_xlabel("Year")
-                    plt.tight_layout()
-                    st.pyplot(fig_sr)
-                    plt.close()
-
-        # TAB 3: PARTY FAMILIES (NEW — from PDF Section B)
-        with tab_families:
-            st.subheader("👨‍👩‍👧 Party Family Analysis")
-            st.markdown("Grouped analysis for Kerala Congress family, Muslim League family, Congress family, and Socialist family.")
-
-            win_col_check = smart_column_lookup(df_edited, "Win Party")
-            if "Party Family" not in df_edited.columns:
-                st.warning("Party Family column not assigned. Check that 'Win Party' or 'Party' column exists.")
-            else:
-                family_stats = df_edited.groupby(["Year", "Party Family"]).size().unstack(fill_value=0)
-                st.markdown("**Seats Won per Family per Election**")
-                st.dataframe(family_stats, use_container_width=True)
-
-                fig_fam, ax_fam = plt.subplots(figsize=(12, 5))
-                for fam in family_stats.columns:
-                    ax_fam.plot(family_stats.index, family_stats[fam], marker='o', label=fam)
-                ax_fam.set_title("Party Family Seats Won over Elections")
-                ax_fam.legend(loc='upper left', fontsize=8)
-                ax_fam.set_xlabel("Year")
-                plt.tight_layout()
-                st.pyplot(fig_fam)
-                plt.close()
-
-                # Vote share by family
-                tv_col = smart_column_lookup(df_edited, "Votes Polled")
-                if tv_col in df_edited.columns and win_col_check in df_edited.columns:
-                    family_votes = df_edited.groupby(["Year", "Party Family"])[tv_col].apply(
-                        lambda x: safe_numeric(x).sum()
-                    ).unstack(fill_value=0)
-                    totals = df_edited.groupby("Year")[tv_col].apply(lambda x: safe_numeric(x).sum())
-                    family_vote_pct = family_votes.div(totals, axis=0) * 100
-
-                    st.markdown("**Vote % per Family per Election**")
-                    st.dataframe(family_vote_pct.round(2), use_container_width=True)
-
-        # TAB 4: BLOC ANALYSIS (NEW — PDF Section D)
-        with tab_blocs:
-            st.subheader("🏛️ LDF / UDF / NDA Bloc Analysis")
-            render_bloc_analysis(df_edited)
-
-        # TAB 5: STATISTICAL INDICES (NEW — PDF Section E)
-        with tab_stats:
-            st.subheader("📐 Statistical Indices (PDF Section E)")
-            with st.expander("ℹ️ Index Glossary", expanded=False):
-                st.markdown("""
-| Index | Category | What it measures |
-|---|---|---|
-| Gallagher Index | Disproportionality | Vote→Seat distortion |
-| Loosemore-Hanby | Disproportionality | Total over/under-representation |
-| Seat Bonus | Disproportionality | Largest party seat bonus |
-| Pedersen Index | Volatility | Net vote change between elections |
-| ENEP | Party System | Effective # of electoral parties |
-| ENPP | Party System | Effective # of parliamentary parties |
-| Turnout Rate % | Participation | Votes / Electors |
-| Fractionalization | Fragmentation | Party system fragmentation |
-| Entropy Index | Fragmentation | Diversity of vote distribution |
-| HHI | Dominance | Vote concentration |
-| Avg Margin | Competitiveness | Average winning margin |
-| Close Contest (<5%) | Competitiveness | Number of razor-thin wins |
-| Safety Index | Competitiveness | Avg margin as % of votes |
-                """)
-            render_statistical_indices(df_edited)
-
-        # TAB 6: SWING ANALYZER (Enhanced — was tab_compare)
-        with tab_swing:
-            render_swing_analyzer(df_edited)
-
-        # TAB 7: REGIONAL TRENDS (NEW — PDF: Regional strength of INC, CPM, CPI)
-        with tab_regional:
-            st.subheader("🗺️ Regional Analysis")
-            render_regional_analysis(df_edited)
-
-        # TAB 8: RESERVED SEATS (NEW — PDF: SC/ST analysis)
-        with tab_reserved:
-            st.subheader("🏷️ Reserved Seat Analysis")
-            render_reserved_seats(df_edited)
-
-        # TAB 9: AI ANALYST
-        with tab_ai:
-            st.markdown("### 🤖 Ask questions about your data")
-            st.info("Tip: Ask about any of the 44 statistical indices, party trends, bloc comparisons, or swing analysis.")
-
-            if "messages" not in st.session_state:
-                st.session_state.messages = []
-
-            for message in st.session_state.messages:
-                with st.chat_message(message["role"]):
-                    st.markdown(message["content"])
-
-            if prompt := st.chat_input("Ask your data..."):
-                st.session_state.messages.append({"role": "user", "content": prompt})
-                with st.chat_message("user"):
-                    st.write(prompt)
-                with st.chat_message("assistant"):
-                    with st.status("🧠 Analyzing...", expanded=True) as status:
-                        fig, text_response, code = query_gemini_smart(prompt, df_edited)
-                        status.update(label="Complete", state="complete", expanded=False)
-                        if text_response:
-                            st.markdown(f"**Insight:** \n {text_response}")
-                            st.session_state.messages.append({"role": "assistant", "content": text_response})
-                        elif not fig:
-                            st.warning("Analysis complete, check code.")
-                        if fig:
-                            st.pyplot(fig)
-                            plt.close()
-                        with st.expander("🔎 View Python Logic"):
-                            st.code(code, language="python")
-
-        # TAB 10: DATA STATS
-        with tab_data:
-            st.info("The detailed raw data is available in the 'View & Edit' section above.")
-            st.write("**Dataset Statistics:**")
-            st.write(df_edited.describe())
-            st.write("**Party Family Distribution:**")
-            if "Party Family" in df_edited.columns:
-                st.dataframe(df_edited["Party Family"].value_counts().reset_index(), use_container_width=True)
-            st.write("**Bloc Distribution:**")
-            if "Bloc" in df_edited.columns:
-                st.dataframe(df_edited["Bloc"].value_counts().reset_index(), use_container_width=True)
-else:
-    st.info("👆 Upload Data to start.")
+if page=="Overview":        page_overview(df_edited)
+elif page=="Party Analysis": page_parties(df_edited)
+elif page=="Party Families": page_families(df_edited)
+elif page=="Blocs":          page_blocs(df_edited)
+elif page=="Statistics":     page_stats(df_edited)
+elif page=="Swing Analyzer": page_swing(df_edited)
+elif page=="Constituency":   page_constituency(df_edited)
+elif page=="Regional":       page_regional(df_edited)
+elif page=="Reserved Seats": page_reserved(df_edited)
+elif page=="AI Analyst":
+    st.markdown('<div class="section-title">🤖 AI Election Analyst</div>', unsafe_allow_html=True)
+    if not api_key:
+        st.warning("Enter your Gemini API key in the sidebar.")
+    else:
+        if "messages" not in st.session_state: st.session_state.messages=[]
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]): st.markdown(msg["content"])
+        if prompt:=st.chat_input("Ask about Kerala elections..."):
+            st.session_state.messages.append({"role":"user","content":prompt})
+            with st.chat_message("user"): st.write(prompt)
+            with st.chat_message("assistant"):
+                with st.status("🧠 Analysing...",expanded=True) as status:
+                    fig,resp,code=query_ai(prompt,df_edited)
+                    status.update(label="Done",state="complete",expanded=False)
+                if resp: st.markdown(f"**Insight:**\n\n{resp}"); st.session_state.messages.append({"role":"assistant","content":resp})
+                if fig: st.pyplot(fig); plt.close()
+                with st.expander("🔎 Python code"): st.code(code,language="python")
