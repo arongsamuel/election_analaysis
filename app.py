@@ -261,7 +261,7 @@ def gen_metric_code(df, name, desc):
 Columns: {list(df.columns)}. Logic: "{desc}"
 Use smart_lookup(df,'col') for columns. pd.to_numeric(...,errors='coerce') for math.
 Return ONLY code, no markdown."""
-    return genai.GenerativeModel('gemini-2.5-flash').generate_content(p).text.strip()
+    return genai.GenerativeModel('gemini-2.5-flash-lite').generate_content(p).text.strip()
 
 def query_ai(query, df):
     if not api_key: return None, None, "No API key."
@@ -271,7 +271,7 @@ def query_ai(query, df):
     p = f"""Expert Kerala Election Analyst. DataFrame `df` available.
 Use smart_lookup(df,'col') for columns. For plots: fig=. For text: answer=.
 Columns: {list(df.columns)}\nSample:\n{sample}\nUSER: {query}"""
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash-lite')
     for _ in range(3):
         try:
             code = model.generate_content(p).text.replace("```python","").replace("```","").strip()
@@ -1160,6 +1160,20 @@ def page_ai(df):
                 st.image(st.session_state.ai_plots[i], use_column_width=True)
                 st.download_button("📥 Download chart (HD)", st.session_state.ai_plots[i],
                                    f"ai_chart_{i}.png", "image/png", key=f"ai_dl_{i}")
+            # Near-invisible code peek — styled to be unobtrusive
+            ai_codes = st.session_state.get("ai_codes", [])
+            code_idx = i // 2  # every other message is assistant
+            if code_idx < len(ai_codes) and ai_codes[code_idx]:
+                st.markdown(
+                    f'<details style="margin-top:0.2rem;">'
+                    f'<summary style="font-size:0.68rem;color:#2a4060;cursor:pointer;'
+                    f'list-style:none;opacity:0.5;">⟨ computation ⟩</summary>'
+                    f'<pre style="background:#060d16;color:#3a5a78;font-size:0.7rem;'
+                    f'padding:0.5rem;border-radius:6px;overflow-x:auto;margin-top:0.3rem;">'
+                    f'{ai_codes[code_idx].replace("<","&lt;").replace(">","&gt;")}</pre>'
+                    f'</details>',
+                    unsafe_allow_html=True
+                )
 
     # Input
     prompt = st.chat_input("Ask anything about Kerala election data…")
@@ -1168,62 +1182,88 @@ def page_ai(df):
 
         genai.configure(api_key=api_key)
 
-        # Token-efficient prompt: no raw data rows, only the context summary + question
-        system = f"""You are a Kerala election expert analyst. Answer concisely and naturally.
-Always write in clear prose — not bullet points unless listing items.
-You have access to this dataset summary:
+        # ── TWO-STAGE PIPELINE ────────────────────────────────────────────
+        # Stage 1: Always run Python against real data to get exact results.
+        #   Gemini writes the computation code; we exec it on the full df.
+        #   This guarantees factual accuracy — no hallucination from summaries.
+        # Stage 2: Pass ONLY the compact result (not raw rows) to Gemini for
+        #   natural-language narration. Very token-efficient.
+        # ─────────────────────────────────────────────────────────────────────
+
+        model = genai.GenerativeModel('gemini-2.5-flash-lite')
+
+        wants_chart = any(w in prompt.lower() for w in
+                          ["plot","chart","graph","show","visualise","visualize","trend","heatmap"])
+
+        # ── Stage 1: Generate & run computation code ──────────────────────
+        code_prompt = f"""You are a Python/pandas expert working with this Kerala election DataFrame.
+
+DataFrame `df` summary:
 {DATA_CONTEXT}
 
-If you need to produce a chart, write Python code that creates a matplotlib `fig`.
-Store your text answer in `answer` (a string).
-Available: df (pandas DataFrame), plt, sns, pd, np, smart_lookup.
-Return ONLY valid Python — no markdown fences."""
+Columns available: {list(df.columns)}
 
-        user_msg = f"Question: {prompt}"
+Task: Write Python code to answer this question: "{prompt}"
 
-        needs_chart = any(w in prompt.lower() for w in
-                          ["plot","chart","graph","show","visualise","visualize","trend","compare","map"])
+RULES:
+- Use smart_lookup(df, 'col_name') to safely access any column.
+- Always store the PRIMARY ANSWER in a variable called `result` — this must be a
+  short string, number, or small dict/list (max ~200 chars). NOT a dataframe.
+  Example: result = f"CPM won 75 seats in 2011 with 35.2% vote share"
+- If a chart is requested, create a matplotlib figure named `fig` (dark theme, facecolor='#0b1120').
+  Style axes: facecolor='#0f1e30', tick/label colors='#8fa3c0', title color='#c9a84c'.
+- Do NOT print anything. Do NOT use st.* functions.
+- Return ONLY valid Python code, no markdown fences."""
 
-        if needs_chart:
-            full_prompt = system + "\n\n" + user_msg + "\nProduce both a chart (fig) and a prose answer (answer)."
-            model = genai.GenerativeModel('gemini-2.5-flash')
-            plot_bytes = None
-            answer_text = ""
-            code_used = ""
-            for attempt in range(3):
-                try:
-                    code = model.generate_content(full_prompt).text.replace("```python","").replace("```","").strip()
-                    g = {"df":df,"plt":plt,"sns":sns,"pd":pd,"np":np,"smart_lookup":smart_col,
-                         "fig":None,"answer":None}
-                    exec(code, g)
-                    if g.get("fig"):
-                        set_plot_style()
-                        plt.tight_layout()
-                        plot_bytes = save_fig_hd(g["fig"])
-                        store_plot(g["fig"], f"ai_{len(st.session_state.ai_messages)}")
-                        plt.close()
-                    answer_text = g.get("answer") or ""
-                    code_used = code
-                    break
-                except Exception as e:
-                    full_prompt += f"\nError: {e}. Fix."
-            if not answer_text:
-                answer_text = "Here's the chart based on your question."
-        else:
-            # Pure text question — very token-light, no code exec
-            text_prompt = f"""{DATA_CONTEXT}
+        plot_bytes = None
+        result_value = None
+        code_used = ""
 
-Question: {prompt}
+        for attempt in range(3):
+            try:
+                raw = model.generate_content(code_prompt).text
+                code_used = raw.replace("```python","").replace("```","").strip()
+                g = {
+                    "df": df, "plt": plt, "sns": sns, "pd": pd, "np": np,
+                    "smart_lookup": smart_col,
+                    "fig": None, "result": None,
+                    "GOLD":"#c9a84c","A1":"#e05c4b","A2":"#4b9ce8","A3":"#6bcb77",
+                    "MUTED":"#8fa3c0","TEXT_MAIN":"#e8e4da","DARK_BG":"#0b1120","CARD_BG":"#0f1e30",
+                    "PAL": ["#c9a84c","#e05c4b","#4b9ce8","#6bcb77","#b07aff","#ff9f7a","#7af0d8"],
+                    "BLOC_COLORS": {"LDF":"#e05c4b","UDF":"#4b9ce8","NDA":"#f0a500","Other":"#888"},
+                }
+                exec(code_used, g)
 
-Answer in 2-5 natural sentences. Be specific with numbers where possible. No bullet points."""
-            model = genai.GenerativeModel('gemini-2.5-flash')
-            resp = model.generate_content(text_prompt)
-            answer_text = resp.text.strip()
-            plot_bytes = None
-            code_used = ""
+                result_value = g.get("result")
 
-        st.session_state.ai_messages.append({"role":"assistant","content":answer_text})
+                if g.get("fig"):
+                    plt.tight_layout()
+                    plot_bytes = save_fig_hd(g["fig"])
+                    store_plot(g["fig"], f"ai_{len(st.session_state.ai_messages)}")
+                    plt.close(g["fig"])
+                break
+            except Exception as e:
+                code_prompt += f"\n\nPrevious attempt failed: {e}\nFix the error and try again."
+
+        # ── Stage 2: Narrate the result naturally (tiny token cost) ───────
+        # Only send the compact result string to Gemini — never raw data rows.
+        narrate_prompt = f"""You are a Kerala election expert. Narrate this result naturally in 2-4 sentences.
+Write as if explaining to a political analyst — confident, specific, no hedging.
+No bullet points. No markdown. Just clear flowing prose.
+
+Question asked: {prompt}
+Computed result: {result_value if result_value is not None else "(chart generated — describe what the chart would show based on the question)"}
+{"A chart was also generated." if plot_bytes else ""}"""
+
+        narration = model.generate_content(narrate_prompt).text.strip()
+
+        st.session_state.ai_messages.append({"role":"assistant","content":narration})
         st.session_state.ai_plots.append(plot_bytes)
+
+        # Store code invisibly for the reveal button
+        if "ai_codes" not in st.session_state: st.session_state.ai_codes = []
+        st.session_state.ai_codes.append(code_used)
+
         st.rerun()
 
     # Code reveal at bottom — almost invisible
