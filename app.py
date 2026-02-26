@@ -764,6 +764,134 @@ def page_reserved(df):
 
 
 # ─────────────────────────────────────────────
+# 8b. CUSTOM METRICS PAGE
+# ─────────────────────────────────────────────
+def page_custom_metrics(df_edited, df_f):
+    st.markdown('<div class="section-title">🛠️ Custom Metric Builder</div>', unsafe_allow_html=True)
+    st.markdown(
+        "Create new calculated columns using plain English. "
+        "They will appear in **all analysis tabs** for the current session."
+    )
+
+    # ── Active metrics panel ──
+    if st.session_state.custom_metrics:
+        st.markdown('<div class="section-title">✅ Active Custom Metrics</div>', unsafe_allow_html=True)
+        for mname, mcode in list(st.session_state.custom_metrics.items()):
+            with st.expander(f"📊 **{mname}**", expanded=False):
+                st.code(mcode, language="python")
+                # Preview on current data
+                try:
+                    preview_df = df_f.head(10).copy()
+                    exec(mcode, {"df": preview_df, "pd": pd, "np": np, "smart_lookup": smart_col})
+                    if mname in preview_df.columns:
+                        col1, col2 = st.columns([2,1])
+                        with col1:
+                            st.dataframe(
+                                preview_df[["Year", smart_col(preview_df,"Constituency Name"), mname]].head(8)
+                                if smart_col(preview_df,"Constituency Name") in preview_df.columns
+                                else preview_df[[mname]].head(8),
+                                use_container_width=True, hide_index=True
+                            )
+                        with col2:
+                            vals = pd.to_numeric(preview_df[mname], errors="coerce").dropna()
+                            if not vals.empty:
+                                st.metric("Mean", f"{vals.mean():.3f}")
+                                st.metric("Min",  f"{vals.min():.3f}")
+                                st.metric("Max",  f"{vals.max():.3f}")
+                except Exception as e:
+                    st.warning(f"Preview error: {e}")
+                if st.button(f"🗑️ Remove {mname}", key=f"rm_{mname}"):
+                    del st.session_state.custom_metrics[mname]
+                    st.rerun()
+        st.divider()
+    else:
+        st.info("No custom metrics yet. Build one below.")
+
+    # ── Builder ──
+    st.markdown('<div class="section-title">➕ Build a New Metric</div>', unsafe_allow_html=True)
+
+    st.markdown("**Available columns:**")
+    st.code(", ".join(df_f.columns.tolist()), language="text")
+
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        nm = st.text_input("Column Name", placeholder="e.g. Win_Margin_Pct", key="cm_name")
+    with c2:
+        nd = st.text_area(
+            "Describe the logic in plain English",
+            placeholder="e.g. Win Vote minus Run vote, divided by Votes Polled, multiplied by 100",
+            key="cm_desc", height=80
+        )
+
+    if st.button("🧠 Draft with AI", key="cm_draft", disabled=(not api_key)):
+        if nm and nd:
+            with st.spinner("AI is translating your logic to code..."):
+                code = gen_metric_code(df_f.head(), nm, nd)
+                st.session_state.draft_code = code
+                st.session_state.draft_name = nm
+                st.rerun()
+        else:
+            st.warning("Please fill in both the column name and logic description.")
+
+    if not api_key:
+        st.caption("⚠️ No Gemini API key — AI drafting disabled. You can write code manually below.")
+        with st.expander("✏️ Write code manually"):
+            manual_code = st.text_area(
+                "Python snippet (use `df` for the dataframe)",
+                placeholder=f"df['{nm or 'my_metric'}'] = pd.to_numeric(df['Win Vote'], errors='coerce') / pd.to_numeric(df['Votes Polled'], errors='coerce') * 100",
+                height=100, key="cm_manual"
+            )
+            manual_name = st.text_input("Metric name", value=nm or "", key="cm_manual_name")
+            if st.button("Test & Save Manual Code", key="cm_manual_save"):
+                try:
+                    test_df = df_f.head(50).copy()
+                    exec(manual_code, {"df": test_df, "pd": pd, "np": np, "smart_lookup": smart_col})
+                    st.success("✅ Code ran successfully!")
+                    st.session_state.custom_metrics[manual_name] = manual_code
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+    # ── Draft preview & save ──
+    if "draft_code" in st.session_state:
+        st.markdown('<div class="section-title">👀 Review Generated Code</div>', unsafe_allow_html=True)
+        edited_code = st.text_area(
+            "You can edit the code before saving:",
+            value=st.session_state.draft_code,
+            height=120, key="cm_edit"
+        )
+        st.session_state.draft_code = edited_code  # keep in sync
+
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if st.button("🧪 Test on sample data", key="cm_test"):
+                try:
+                    test_df = df_f.head(50).copy()
+                    exec(edited_code, {"df": test_df, "pd": pd, "np": np, "smart_lookup": smart_col})
+                    draft_name = st.session_state.get("draft_name","metric")
+                    if draft_name in test_df.columns:
+                        st.success(f"✅ Column **{draft_name}** created successfully!")
+                        st.dataframe(test_df[[draft_name]].head(10), use_container_width=True, hide_index=True)
+                    else:
+                        st.warning("Code ran but column was not created. Check the column name in your code.")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+        with col2:
+            if st.button("💾 Save to all tabs", key="cm_save", type="primary"):
+                try:
+                    test_df = df_f.head(20).copy()
+                    exec(edited_code, {"df": test_df, "pd": pd, "np": np, "smart_lookup": smart_col})
+                    draft_name = st.session_state.get("draft_name","metric")
+                    st.session_state.custom_metrics[draft_name] = edited_code
+                    del st.session_state.draft_code
+                    if "draft_name" in st.session_state: del st.session_state.draft_name
+                    st.success(f"✅ **{draft_name}** saved! It will now appear in all analysis tabs.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Cannot save — fix errors first: {e}")
+
+
+# ─────────────────────────────────────────────
 # 9. MAIN APP
 # ─────────────────────────────────────────────
 st.markdown("""
@@ -795,31 +923,10 @@ with st.spinner("Loading..."):
 if master_df is None: st.error("Could not load data."); st.stop()
 st.toast(f"✅ {len(master_df):,} records across {master_df['Year'].nunique()} elections", icon="🗳️")
 
-# Custom metrics
+# ── Session state init ──────────────────────
 if "custom_metrics" not in st.session_state: st.session_state.custom_metrics = {}
-with st.sidebar.expander("🛠️ Custom Metrics", expanded=False):
-    nm=st.text_input("Column Name"); nd=st.text_area("Logic (plain English)")
-    if st.button("Draft"):
-        if nm and nd:
-            with st.spinner("Translating..."):
-                code=gen_metric_code(master_df.head(),nm,nd)
-                st.session_state.draft_code=code; st.session_state.draft_name=nm; st.rerun()
-    if "draft_code" in st.session_state:
-        st.code(st.session_state.draft_code,language="python")
-        try:
-            tdf=master_df.head(50).copy()
-            exec_g={"df":tdf,"pd":pd,"smart_lookup":smart_col}
-            exec(st.session_state.draft_code,exec_g); st.success("✅ Test passed")
-            if st.button("Save"):
-                st.session_state.custom_metrics[st.session_state.draft_name]=st.session_state.draft_code
-                del st.session_state.draft_code; st.rerun()
-        except Exception as e: st.error(str(e))
 
-for name,code in st.session_state.custom_metrics.items():
-    try: exec(code,{"df":master_df,"pd":pd,"smart_lookup":smart_col})
-    except Exception as e: st.warning(f"Metric '{name}': {e}")
-
-# Filters
+# ── Filters (sidebar) ───────────────────────
 st.sidebar.divider()
 st.sidebar.markdown("### 🔍 Filters")
 years_avail=sorted(master_df['Year'].unique())
@@ -839,6 +946,14 @@ if cat_c in df_f.columns:
 
 st.sidebar.caption(f"**{len(df_f):,}** rows · {df_f['Year'].nunique()} elections")
 
+# ── Apply saved custom metrics to filtered data ──
+# Runs AFTER filtering so new columns appear in df_edited
+for _cm_name, _cm_code in st.session_state.custom_metrics.items():
+    try:
+        exec(_cm_code, {"df": df_f, "pd": pd, "smart_lookup": smart_col, "np": np})
+    except Exception as _e:
+        st.warning(f"Custom metric '{_cm_name}' error: {_e}")
+
 df_edited=df_f.copy()
 with st.expander("📝 View & Edit Raw Data", expanded=False):
     df_edited=st.data_editor(df_f,num_rows="dynamic",use_container_width=True,key="ed")
@@ -847,7 +962,7 @@ with st.expander("📝 View & Edit Raw Data", expanded=False):
 # ── NAVIGATION ───────────────────────────────
 NAV=[("🏠","Overview"),("🎯","Party Analysis"),("👨‍👩‍👧","Party Families"),("🏛️","Blocs"),
      ("📐","Statistics"),("⚔️","Swing Analyzer"),("📍","Constituency"),
-     ("🗺️","Regional"),("🏷️","Reserved Seats"),("🤖","AI Analyst")]
+     ("🗺️","Regional"),("🏷️","Reserved Seats"),("🛠️","Custom Metrics"),("🤖","AI Analyst")]
 
 if "tab" not in st.session_state: st.session_state.tab="Overview"
 
@@ -877,6 +992,7 @@ elif page=="Swing Analyzer": page_swing(df_edited)
 elif page=="Constituency":   page_constituency(df_edited)
 elif page=="Regional":       page_regional(df_edited)
 elif page=="Reserved Seats": page_reserved(df_edited)
+elif page=="Custom Metrics": page_custom_metrics(df_edited, df_f)
 elif page=="AI Analyst":
     st.markdown('<div class="section-title">🤖 AI Election Analyst</div>', unsafe_allow_html=True)
     if not api_key:
