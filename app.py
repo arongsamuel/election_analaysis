@@ -271,7 +271,7 @@ def query_ai(query, df):
     p = f"""Expert Kerala Election Analyst. DataFrame `df` available.
 Use smart_lookup(df,'col') for columns. For plots: fig=. For text: answer=.
 Columns: {list(df.columns)}\nSample:\n{sample}\nUSER: {query}"""
-    model = genai.GenerativeModel('gemini-2.5-flash-lite')
+    model = genai.GenerativeModel('gemini-2.5-flash')
     for _ in range(3):
         try:
             code = model.generate_content(p).text.replace("```python","").replace("```","").strip()
