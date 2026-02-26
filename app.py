@@ -1186,7 +1186,7 @@ Return ONLY valid Python — no markdown fences."""
 
         if needs_chart:
             full_prompt = system + "\n\n" + user_msg + "\nProduce both a chart (fig) and a prose answer (answer)."
-            model = genai.GenerativeModel('gemini-2.5-flash-lite')
+            model = genai.GenerativeModel('gemini-2.5-flash')
             plot_bytes = None
             answer_text = ""
             code_used = ""
@@ -1216,7 +1216,7 @@ Return ONLY valid Python — no markdown fences."""
 Question: {prompt}
 
 Answer in 2-5 natural sentences. Be specific with numbers where possible. No bullet points."""
-            model = genai.GenerativeModel('gemini-2.5-flash-lite')
+            model = genai.GenerativeModel('gemini-2.5-flash')
             resp = model.generate_content(text_prompt)
             answer_text = resp.text.strip()
             plot_bytes = None
