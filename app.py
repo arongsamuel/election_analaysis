@@ -261,7 +261,7 @@ def gen_metric_code(df, name, desc):
 Columns: {list(df.columns)}. Logic: "{desc}"
 Use smart_lookup(df,'col') for columns. pd.to_numeric(...,errors='coerce') for math.
 Return ONLY code, no markdown."""
-    return genai.GenerativeModel('gemini-2.5-flash-lite').generate_content(p).text.strip()
+    return genai.GenerativeModel('gemini-2.5-flash').generate_content(p).text.strip()
 
 def query_ai(query, df):
     if not api_key: return None, None, "No API key."
