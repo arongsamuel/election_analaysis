@@ -286,6 +286,35 @@ Columns: {list(df.columns)}\nSample:\n{sample}\nUSER: {query}"""
 # 8. PAGE RENDERERS
 # ─────────────────────────────────────────────
 
+# ── HD Plot Export helper ──────────────────────────────
+def save_fig_hd(fig, name="plot"):
+    """Return a bytes buffer of the figure at 200dpi for download."""
+    import io
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=200, bbox_inches="tight",
+                facecolor=fig.get_facecolor())
+    buf.seek(0)
+    return buf.getvalue()
+
+def hd_download(fig, label="📥 Download HD", key="dl"):
+    """Inline HD download button below a chart."""
+    data = save_fig_hd(fig)
+    st.download_button(label, data, file_name=f"{key}.png",
+                       mime="image/png", key=key)
+
+# ── Plot store for batch export ────────────────────────
+if "plot_store" not in st.session_state:
+    st.session_state.plot_store = {}          # {label: png_bytes}
+
+def store_plot(fig, label):
+    """Register a figure into the plot store for batch download."""
+    st.session_state.plot_store[label] = save_fig_hd(fig, label)
+
+
+# ─────────────────────────────────────────────
+# 8. PAGE RENDERERS
+# ─────────────────────────────────────────────
+
 def page_overview(df):
     wc = smart_col(df,"Win Party"); tv = smart_col(df,"Votes Polled"); el = smart_col(df,"Electors")
     mc_col = smart_col(df,"Constituency Name")
@@ -319,7 +348,8 @@ def page_overview(df):
                     ax.bar(by.index.astype(str), v, bottom=bottom, color=BLOC_COLORS.get(b,"#888"), label=b, width=0.65)
                     bottom += v
             ax.set_xlabel("Year"); ax.set_ylabel("Seats"); ax.legend(); ax.grid(axis='y',alpha=0.3)
-            plt.tight_layout(); st.pyplot(fig); plt.close()
+            plt.tight_layout(); st.pyplot(fig)
+            store_plot(fig, "bloc_seats_overview"); plt.close()
 
     with col2:
         st.markdown('<div class="section-title">Top 10 Parties by Total Seats</div>', unsafe_allow_html=True)
@@ -330,7 +360,8 @@ def page_overview(df):
         bars = ax2.barh(tp["Party"][::-1], tp["Seats"][::-1], color=colors[::-1])
         ax2.bar_label(bars, fmt='%d', padding=3, color=TEXT_MAIN, fontsize=8)
         ax2.set_xlabel("Total Seats")
-        plt.tight_layout(); st.pyplot(fig2); plt.close()
+        plt.tight_layout(); st.pyplot(fig2)
+        store_plot(fig2, "top_parties_seats"); plt.close()
 
     if tv in df.columns and el in df.columns:
         st.markdown('<div class="section-title">Voter Turnout Trend (%)</div>', unsafe_allow_html=True)
@@ -345,9 +376,10 @@ def page_overview(df):
                 ax3.annotate(f"{row['Turnout %']:.1f}%", (str(row['Year']),row['Turnout %']),
                              textcoords="offset points",xytext=(0,6),ha='center',fontsize=7.5,color=GOLD)
         ax3.set_ylim(50,90); ax3.set_xlabel("Year")
-        plt.tight_layout(); st.pyplot(fig3); plt.close()
+        plt.tight_layout(); st.pyplot(fig3)
+        store_plot(fig3, "turnout_trend"); plt.close()
 
-    # Alliance dominance heatmap over years
+    # Heatmap
     st.markdown('<div class="section-title">Party Vote Share Heatmap (Top Parties)</div>', unsafe_allow_html=True)
     if tv in df.columns:
         top_parties_list = df[wc].value_counts().head(8).index.tolist()
@@ -364,8 +396,150 @@ def page_overview(df):
                     linecolor='#1e3250', ax=ax4, cbar_kws={'shrink':0.6})
         ax4.set_title("Vote % by Party and Election Year")
         ax4.tick_params(axis='x', rotation=45)
-        plt.tight_layout(); st.pyplot(fig4); plt.close()
+        plt.tight_layout(); st.pyplot(fig4)
+        store_plot(fig4, "vote_share_heatmap"); plt.close()
 
+
+def page_dashboard(df):
+    """Interactive chart builder — any metric, any chart type, any grouping."""
+    st.markdown('<div class="section-title">📊 Interactive Dashboard</div>', unsafe_allow_html=True)
+
+    wc  = smart_col(df,"Win Party");  tv  = smart_col(df,"Votes Polled")
+    el  = smart_col(df,"Electors");   mg  = smart_col(df,"Margin")
+    cc  = smart_col(df,"Constituency Name")
+
+    # Build metric list: numeric columns + custom metrics
+    numeric_cols = df.select_dtypes(include='number').columns.tolist()
+    base_metrics = [c for c in [tv, el, mg, "Win Vote", "Run vote", "NDA BJP Vote", "Others Vote"]
+                    if c in df.columns]
+    custom_cols  = [c for c in df.columns if c not in [tv,el,mg,"Year","Cons No.","Cons No."]
+                    and df[c].dtype in ['float64','int64'] and c not in base_metrics]
+    metric_opts  = list(dict.fromkeys(base_metrics + custom_cols))
+
+    cat_opts = ["Win Party","Bloc","Party Family","Win Alliance","Category","Constituency Name","Year"]
+    cat_opts = [smart_col(df,c) for c in cat_opts if smart_col(df,c) in df.columns]
+
+    # ── Controls ───────────────────────────────
+    c1,c2,c3,c4,c5 = st.columns([2,2,2,2,2])
+    with c1:
+        chart_type = st.selectbox("Chart Type", ["📈 Line","📊 Bar","🥧 Pie","📦 Box","🔥 Heatmap"], key="db_chart")
+    with c2:
+        metric = st.selectbox("Metric / Y-axis", metric_opts, key="db_metric") if metric_opts else None
+    with c3:
+        split_by = st.selectbox("Group / Split by", cat_opts, key="db_split") if cat_opts else None
+    with c4:
+        agg = st.selectbox("Aggregation", ["Sum","Mean","Max","Count"], key="db_agg")
+    with c5:
+        top_n = st.slider("Top N categories", 3, 20, 10, key="db_topn")
+
+    if not metric:
+        st.info("No numeric columns detected yet."); return
+
+    agg_map = {"Sum":"sum","Mean":"mean","Max":"max","Count":"count"}
+    af = agg_map[agg]
+
+    df2 = df.copy()
+    df2[metric] = pd.to_numeric(df2[metric], errors='coerce')
+
+    fig = None
+
+    try:
+        # ── LINE ──────────────────────────────
+        if "Line" in chart_type:
+            grp = ["Year"] + ([split_by] if split_by and split_by != "Year" else [])
+            data = df2.groupby(grp)[metric].agg(af).reset_index()
+            fig, ax = plt.subplots(figsize=(12,4))
+            if split_by and split_by != "Year":
+                top_cats = df2[split_by].value_counts().head(top_n).index
+                for i,cat in enumerate(top_cats):
+                    sub = data[data[split_by]==cat].sort_values("Year")
+                    ax.plot(sub["Year"].astype(str), sub[metric], marker='o',
+                            color=PAL[i%len(PAL)], label=str(cat), linewidth=2)
+                ax.legend(fontsize=7, ncol=2)
+            else:
+                data = data.sort_values("Year")
+                ax.fill_between(data["Year"].astype(str), data[metric], alpha=0.15, color=GOLD)
+                ax.plot(data["Year"].astype(str), data[metric], marker='o', color=GOLD, linewidth=2.5)
+            ax.set_title(f"{agg} of {metric} over Time"); ax.set_xlabel("Year")
+
+        # ── BAR ──────────────────────────────
+        elif "Bar" in chart_type:
+            if not split_by: st.warning("Select a Group category for bar charts."); return
+            data = df2.groupby(split_by)[metric].agg(af).reset_index()
+            data = data.dropna().sort_values(metric, ascending=False).head(top_n)
+            fig, ax = plt.subplots(figsize=(10,max(4, len(data)*0.4)))
+            colors = [BLOC_COLORS.get(assign_bloc(p), PAL[i%len(PAL)]) for i,p in enumerate(data[split_by])]
+            bars = ax.barh(data[split_by][::-1], data[metric][::-1], color=colors[::-1])
+            ax.bar_label(bars, fmt='%.0f', padding=3, color=TEXT_MAIN, fontsize=8)
+            ax.set_title(f"Top {top_n} {split_by} by {agg} {metric}")
+            ax.set_xlabel(f"{agg} {metric}")
+
+        # ── PIE ──────────────────────────────
+        elif "Pie" in chart_type:
+            if not split_by: st.warning("Select a Group category for pie charts."); return
+            data = df2.groupby(split_by)[metric].agg(af).reset_index()
+            data = data.dropna().sort_values(metric, ascending=False).head(top_n)
+            fig, ax = plt.subplots(figsize=(8,6))
+            wedge_colors = [BLOC_COLORS.get(assign_bloc(p), PAL[i%len(PAL)]) for i,p in enumerate(data[split_by])]
+            wedges, texts, autotexts = ax.pie(
+                data[metric], labels=data[split_by], autopct='%1.1f%%',
+                startangle=140, colors=wedge_colors,
+                wedgeprops={'edgecolor':'#0b1120','linewidth':1.5}
+            )
+            for t in autotexts: t.set_color(DARK_BG); t.set_fontsize(8)
+            for t in texts:     t.set_color(TEXT_MAIN); t.set_fontsize(8)
+            ax.set_title(f"{metric} share by {split_by} (Top {top_n})")
+
+        # ── BOX ──────────────────────────────
+        elif "Box" in chart_type:
+            if split_by:
+                top_cats = df2[split_by].value_counts().head(top_n).index
+                sub = df2[df2[split_by].isin(top_cats)]
+                fig, ax = plt.subplots(figsize=(12,5))
+                sns.boxplot(data=sub, x=split_by, y=metric, ax=ax,
+                            palette={c: PAL[i%len(PAL)] for i,c in enumerate(top_cats)},
+                            order=top_cats)
+                plt.xticks(rotation=35, ha='right')
+            else:
+                fig, ax = plt.subplots(figsize=(5,5))
+                sns.boxplot(y=df2[metric], ax=ax, color=GOLD)
+            ax.set_title(f"Distribution of {metric}")
+
+        # ── HEATMAP ──────────────────────────
+        elif "Heatmap" in chart_type:
+            if not split_by: st.warning("Select a Group for heatmap."); return
+            top_cats = df2[split_by].value_counts().head(top_n).index
+            sub = df2[df2[split_by].isin(top_cats)]
+            pivot = sub.groupby(["Year", split_by])[metric].agg(af).unstack(fill_value=0)
+            pivot.columns = [str(c) for c in pivot.columns]
+            fig, ax = plt.subplots(figsize=(max(10, len(pivot.columns)*0.9), max(4, len(pivot)*0.5)))
+            sns.heatmap(pivot.T, cmap='YlOrBr', annot=True, fmt='.0f',
+                        linewidths=0.3, linecolor='#1e3250', ax=ax)
+            ax.set_title(f"{agg} {metric} by Year and {split_by}")
+            ax.tick_params(axis='x', rotation=45)
+
+        if fig:
+            plt.tight_layout()
+            st.pyplot(fig)
+            plot_key = f"dashboard_{chart_type.split()[1].lower()}_{metric}_{split_by}"
+            store_plot(fig, plot_key)
+            hd_download(fig, "📥 Download this chart (HD)", key=f"dldash_{plot_key[:30]}")
+            plt.close()
+
+    except Exception as e:
+        st.error(f"Chart error: {e}")
+
+    # ── Custom metric columns visible as table ──
+    custom_metric_cols = list(st.session_state.custom_metrics.keys())
+    if custom_metric_cols:
+        st.markdown('<div class="section-title">📐 Custom Metric Preview</div>', unsafe_allow_html=True)
+        show_cols = ["Year", smart_col(df,"Constituency Name")] + \
+                    [c for c in custom_metric_cols if c in df.columns]
+        show_cols = [c for c in show_cols if c in df.columns]
+        if show_cols:
+            st.dataframe(df[show_cols].head(30), use_container_width=True, hide_index=True)
+        else:
+            st.info("Custom metrics not yet visible — save them in the Custom Metrics tab first.")
 
 def page_parties(df):
     wc = smart_col(df,"Win Party"); tv = smart_col(df,"Votes Polled")
@@ -766,6 +940,7 @@ def page_reserved(df):
 # ─────────────────────────────────────────────
 # 8b. CUSTOM METRICS PAGE
 # ─────────────────────────────────────────────
+
 def page_custom_metrics(df_edited, df_f):
     st.markdown('<div class="section-title">🛠️ Custom Metric Builder</div>', unsafe_allow_html=True)
     st.markdown(
@@ -890,8 +1065,176 @@ def page_custom_metrics(df_edited, df_f):
                 except Exception as e:
                     st.error(f"Cannot save — fix errors first: {e}")
 
+def page_ai(df):
+    st.markdown('<div class="section-title">🤖 AI Election Analyst</div>', unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────
+    if not api_key:
+        st.markdown("""
+        <div style="background:#142236;border:1px solid #2a4060;border-radius:12px;padding:1.5rem;text-align:center;">
+          <div style="font-size:2rem;">🔑</div>
+          <div style="font-family:'Playfair Display',serif;color:#c9a84c;margin:0.4rem 0;">API Key Required</div>
+          <div style="color:#8fa3c0;font-size:0.85rem;">Enter your Gemini API key in the sidebar to enable AI analysis.</div>
+        </div>""", unsafe_allow_html=True)
+        return
+
+    # Compute a compact data summary (not the full df — token-efficient)
+    wc  = smart_col(df,"Win Party");  tv  = smart_col(df,"Votes Polled")
+    el  = smart_col(df,"Electors");   mg  = smart_col(df,"Margin")
+    cc  = smart_col(df,"Constituency Name")
+    years = sorted(df['Year'].unique())
+
+    # Build a tight context string instead of sending raw rows
+    context_lines = [
+        f"Dataset: Kerala Assembly Elections, {fmt_year(min(years))}–{fmt_year(max(years))}",
+        f"Rows: {len(df):,} | Constituencies: {df[cc].nunique() if cc in df.columns else '?'} | Years: {[str(y) for y in years]}",
+        f"Columns: {list(df.columns)}",
+    ]
+    if wc in df.columns:
+        top5 = df[wc].value_counts().head(5)
+        context_lines.append(f"Top 5 parties by wins: {dict(top5)}")
+    if 'Bloc' in df.columns:
+        bloc_wins = df.groupby(['Year','Bloc']).size().unstack(fill_value=0).to_dict()
+        context_lines.append(f"Bloc wins by year (sample): LDF/UDF/NDA pattern present")
+    if tv in df.columns:
+        yr_votes = df.groupby('Year')[tv].apply(lambda x: n(x).sum()).to_dict()
+        context_lines.append(f"Total votes by year: { {str(k): f'{v/1e6:.1f}M' for k,v in list(yr_votes.items())[-5:]} }")
+    if mg in df.columns:
+        context_lines.append(f"Margin stats: mean={n(df[mg]).mean():.0f}, min={n(df[mg]).min():.0f}, max={n(df[mg]).max():.0f}")
+
+    DATA_CONTEXT = "\n".join(context_lines)
+
+    # Session state
+    if "ai_messages" not in st.session_state: st.session_state.ai_messages = []
+    if "ai_plots"    not in st.session_state: st.session_state.ai_plots    = []   # list of png bytes
+
+    # Suggested questions
+    suggestions = [
+        "Which party has the highest strike rate across all elections?",
+        "How has LDF vs UDF dominance changed over decades?",
+        "Which constituencies have never changed their winning party?",
+        "Compare voter turnout trends across all elections",
+        "Which election had the most closely contested seats?",
+        "Show CPM's stronghold vs hostile constituencies",
+    ]
+
+    if not st.session_state.ai_messages:
+        st.markdown("""
+        <div style="background:linear-gradient(135deg,#0f1e30,#142236);border:1px solid #2a4060;
+                    border-radius:12px;padding:1.2rem 1.5rem;margin-bottom:1rem;">
+          <div style="font-family:'Playfair Display',serif;color:#c9a84c;font-size:1rem;margin-bottom:0.6rem;">
+            💡 Try asking…
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:0.4rem;">
+        """ + "".join(
+            f'<span style="background:#1a3050;border:1px solid #2a4060;border-radius:20px;'
+            f'padding:0.25rem 0.7rem;font-size:0.78rem;color:#c8d8e8;cursor:pointer;">{q}</span>'
+            for q in suggestions
+        ) + """
+          </div>
+        </div>""", unsafe_allow_html=True)
+
+    # Message history
+    for i, msg in enumerate(st.session_state.ai_messages):
+        role = msg["role"]
+        if role == "user":
+            st.markdown(f"""
+            <div style="display:flex;justify-content:flex-end;margin:0.5rem 0;">
+              <div style="background:#1a3050;border:1px solid #2a4060;border-radius:12px 12px 2px 12px;
+                          padding:0.6rem 1rem;max-width:80%;color:#e8e4da;font-size:0.88rem;">
+                {msg["content"]}
+              </div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+            <div style="display:flex;align-items:flex-start;gap:0.6rem;margin:0.5rem 0;">
+              <div style="background:#c9a84c;border-radius:50%;width:28px;height:28px;
+                          display:flex;align-items:center;justify-content:center;
+                          flex-shrink:0;font-size:0.9rem;">🗳️</div>
+              <div style="background:#0f1e30;border:1px solid #1e3250;border-radius:2px 12px 12px 12px;
+                          padding:0.7rem 1rem;max-width:85%;color:#e8e4da;font-size:0.88rem;line-height:1.55;">
+                {msg["content"]}
+              </div>
+            </div>""", unsafe_allow_html=True)
+            # Show any saved plot for this message
+            if i < len(st.session_state.ai_plots) and st.session_state.ai_plots[i]:
+                st.image(st.session_state.ai_plots[i], use_column_width=True)
+                st.download_button("📥 Download chart (HD)", st.session_state.ai_plots[i],
+                                   f"ai_chart_{i}.png", "image/png", key=f"ai_dl_{i}")
+
+    # Input
+    prompt = st.chat_input("Ask anything about Kerala election data…")
+    if prompt:
+        st.session_state.ai_messages.append({"role":"user","content":prompt})
+
+        genai.configure(api_key=api_key)
+
+        # Token-efficient prompt: no raw data rows, only the context summary + question
+        system = f"""You are a Kerala election expert analyst. Answer concisely and naturally.
+Always write in clear prose — not bullet points unless listing items.
+You have access to this dataset summary:
+{DATA_CONTEXT}
+
+If you need to produce a chart, write Python code that creates a matplotlib `fig`.
+Store your text answer in `answer` (a string).
+Available: df (pandas DataFrame), plt, sns, pd, np, smart_lookup.
+Return ONLY valid Python — no markdown fences."""
+
+        user_msg = f"Question: {prompt}"
+
+        needs_chart = any(w in prompt.lower() for w in
+                          ["plot","chart","graph","show","visualise","visualize","trend","compare","map"])
+
+        if needs_chart:
+            full_prompt = system + "\n\n" + user_msg + "\nProduce both a chart (fig) and a prose answer (answer)."
+            model = genai.GenerativeModel('gemini-2.5-flash-lite')
+            plot_bytes = None
+            answer_text = ""
+            code_used = ""
+            for attempt in range(3):
+                try:
+                    code = model.generate_content(full_prompt).text.replace("```python","").replace("```","").strip()
+                    g = {"df":df,"plt":plt,"sns":sns,"pd":pd,"np":np,"smart_lookup":smart_col,
+                         "fig":None,"answer":None}
+                    exec(code, g)
+                    if g.get("fig"):
+                        set_plot_style()
+                        plt.tight_layout()
+                        plot_bytes = save_fig_hd(g["fig"])
+                        store_plot(g["fig"], f"ai_{len(st.session_state.ai_messages)}")
+                        plt.close()
+                    answer_text = g.get("answer") or ""
+                    code_used = code
+                    break
+                except Exception as e:
+                    full_prompt += f"\nError: {e}. Fix."
+            if not answer_text:
+                answer_text = "Here's the chart based on your question."
+        else:
+            # Pure text question — very token-light, no code exec
+            text_prompt = f"""{DATA_CONTEXT}
+
+Question: {prompt}
+
+Answer in 2-5 natural sentences. Be specific with numbers where possible. No bullet points."""
+            model = genai.GenerativeModel('gemini-2.5-flash-lite')
+            resp = model.generate_content(text_prompt)
+            answer_text = resp.text.strip()
+            plot_bytes = None
+            code_used = ""
+
+        st.session_state.ai_messages.append({"role":"assistant","content":answer_text})
+        st.session_state.ai_plots.append(plot_bytes)
+        st.rerun()
+
+    # Code reveal at bottom — almost invisible
+    if st.session_state.ai_messages:
+        c1, c2 = st.columns([6,1])
+        with c2:
+            if st.button("🗑️ Clear", key="ai_clear"):
+                st.session_state.ai_messages = []
+                st.session_state.ai_plots    = []
+                st.rerun()
+
 # 9. MAIN APP
 # ─────────────────────────────────────────────
 st.markdown("""
@@ -946,6 +1289,25 @@ if cat_c in df_f.columns:
 
 st.sidebar.caption(f"**{len(df_f):,}** rows · {df_f['Year'].nunique()} elections")
 
+# ── HD Batch Export sidebar ──────────────────
+st.sidebar.divider()
+st.sidebar.markdown("### 📥 Export All Charts")
+if st.session_state.get("plot_store"):
+    import io, zipfile
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, data in st.session_state.plot_store.items():
+            zf.writestr(f"{name}.png", data)
+    zip_buf.seek(0)
+    st.sidebar.download_button(
+        f"⬇️ Download {len(st.session_state.plot_store)} charts (ZIP)",
+        zip_buf.getvalue(), "kerala_election_charts.zip", "application/zip", key="batch_dl"
+    )
+    if st.sidebar.button("🗑️ Clear chart store", key="clear_plots"):
+        st.session_state.plot_store = {}; st.rerun()
+else:
+    st.sidebar.caption("Charts will appear here after browsing pages.")
+
 # ── Apply saved custom metrics to filtered data ──
 # Runs AFTER filtering so new columns appear in df_edited
 for _cm_name, _cm_code in st.session_state.custom_metrics.items():
@@ -960,7 +1322,7 @@ with st.expander("📝 View & Edit Raw Data", expanded=False):
     st.download_button("📥 Download CSV",df_edited.to_csv(index=False).encode(),"election_data.csv","text/csv")
 
 # ── NAVIGATION ───────────────────────────────
-NAV=[("🏠","Overview"),("🎯","Party Analysis"),("👨‍👩‍👧","Party Families"),("🏛️","Blocs"),
+NAV=[("🏠","Overview"),("📊","Dashboard"),("🎯","Party Analysis"),("👨‍👩‍👧","Party Families"),("🏛️","Blocs"),
      ("📐","Statistics"),("⚔️","Swing Analyzer"),("📍","Constituency"),
      ("🗺️","Regional"),("🏷️","Reserved Seats"),("🛠️","Custom Metrics"),("🤖","AI Analyst")]
 
@@ -984,6 +1346,7 @@ st.divider()
 page=st.session_state.tab
 
 if page=="Overview":        page_overview(df_edited)
+elif page=="Dashboard":      page_dashboard(df_edited)
 elif page=="Party Analysis": page_parties(df_edited)
 elif page=="Party Families": page_families(df_edited)
 elif page=="Blocs":          page_blocs(df_edited)
@@ -993,21 +1356,4 @@ elif page=="Constituency":   page_constituency(df_edited)
 elif page=="Regional":       page_regional(df_edited)
 elif page=="Reserved Seats": page_reserved(df_edited)
 elif page=="Custom Metrics": page_custom_metrics(df_edited, df_f)
-elif page=="AI Analyst":
-    st.markdown('<div class="section-title">🤖 AI Election Analyst</div>', unsafe_allow_html=True)
-    if not api_key:
-        st.warning("Enter your Gemini API key in the sidebar.")
-    else:
-        if "messages" not in st.session_state: st.session_state.messages=[]
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]): st.markdown(msg["content"])
-        if prompt:=st.chat_input("Ask about Kerala elections..."):
-            st.session_state.messages.append({"role":"user","content":prompt})
-            with st.chat_message("user"): st.write(prompt)
-            with st.chat_message("assistant"):
-                with st.status("🧠 Analysing...",expanded=True) as status:
-                    fig,resp,code=query_ai(prompt,df_edited)
-                    status.update(label="Done",state="complete",expanded=False)
-                if resp: st.markdown(f"**Insight:**\n\n{resp}"); st.session_state.messages.append({"role":"assistant","content":resp})
-                if fig: st.pyplot(fig); plt.close()
-                with st.expander("🔎 Python code"): st.code(code,language="python")
+elif page=="AI Analyst":    page_ai(df_edited)
