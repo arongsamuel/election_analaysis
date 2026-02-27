@@ -328,7 +328,7 @@ def gen_metric_code(df, name, desc):
          f"Output:single assignment line only,no comments,no imports,no markdown")
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-2.5-flash-lite'),
-        generation_config={"temperature":0,"max_output_tokens":120,"candidate_count":1})
+    generation_config={"temperature":0,"max_output_tokens":120,"candidate_count":1})
     code = ""
     for attempt in range(3):
         try:
