@@ -327,8 +327,8 @@ def gen_metric_code(df, name, desc):
          f"Ex:df['m']=pd.to_numeric(smart_get(df,'Win Vote'),errors='coerce')/pd.to_numeric(smart_get(df,'Votes Polled'),errors='coerce')*100\n"
          f"Output:single assignment line only,no comments,no imports,no markdown")
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.5-flash-lite'),
-    generation_config={"temperature":0,"max_output_tokens":120,"candidate_count":1})
+    model = genai.GenerativeModel('gemini-2.5-flash-lite',
+        generation_config={"temperature":0,"max_output_tokens":120,"candidate_count":1})
     code = ""
     for attempt in range(3):
         try:
