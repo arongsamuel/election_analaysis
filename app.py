@@ -60,7 +60,7 @@ def _check_password():
         entered = st.text_input("Password", type="password", key="_pw_input",
                                 placeholder="Enter access password",
                                 label_visibility="collapsed")
-        if st.button("Unlock →", use_container_width=True, key="_pw_btn", type="primary"):
+        if st.button("Unlock →", width='stretch', key="_pw_btn", type="primary"):
             if entered == secret_pw:
                 st.query_params["auth"] = token
                 st.rerun()
@@ -221,7 +221,7 @@ def assign_bloc(v):
         if v in ms: return b
     return "Other"
 
-def n(s): return pd.to_numeric(s, errors='coerce')
+def to_num(s): return pd.to_numeric(s, errors='coerce')
 
 def fmt_year(y):
     try: return str(int(float(y)))
@@ -327,7 +327,7 @@ def gen_metric_code(df, name, desc):
          f"Ex:df['m']=pd.to_numeric(smart_get(df,'Win Vote'),errors='coerce')/pd.to_numeric(smart_get(df,'Votes Polled'),errors='coerce')*100\n"
          f"Output:single assignment line only,no comments,no imports,no markdown")
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.5-flash-lite',
+    model = genai.GenerativeModel('gemini-2.0-flash',
         generation_config={"temperature":0,"max_output_tokens":120,"candidate_count":1})
     code = ""
     for attempt in range(3):
@@ -352,7 +352,7 @@ def query_ai(query, df):
     p = f"""Expert Kerala Election Analyst. DataFrame `df` available.
 Use smart_lookup(df,'col') for columns. For plots: fig=. For text: answer=.
 Columns: {list(df.columns)}\nSample:\n{sample}\nUSER: {query}"""
-    model = genai.GenerativeModel('gemini-2.5-flash-lite')
+    model = genai.GenerativeModel('gemini-2.0-flash')
     for _ in range(3):
         try:
             code = model.generate_content(p).text.replace("```python","").replace("```","").strip()
@@ -400,8 +400,8 @@ def page_overview(df):
     wc = smart_col(df,"Win Party"); tv = smart_col(df,"Votes Polled"); el = smart_col(df,"Electors")
     mc_col = smart_col(df,"Constituency Name")
     years = sorted(df['Year'].unique())
-    tot_v  = n(df[tv]).sum() if tv in df.columns else 0
-    tot_el = n(df[el]).sum() if el in df.columns else 0
+    tot_v  = to_num(df[tv]).sum() if tv in df.columns else 0
+    tot_el = to_num(df[el]).sum() if el in df.columns else 0
     turnout = tot_v/tot_el*100 if tot_el>0 else 0
     np_    = df[wc].nunique() if wc in df.columns else "—"
     tot_s  = df[mc_col].nunique() if mc_col in df.columns else "—"
@@ -447,7 +447,9 @@ def page_overview(df):
     if tv in df.columns and el in df.columns:
         st.markdown('<div class="section-title">Voter Turnout Trend (%)</div>', unsafe_allow_html=True)
         tr = df.groupby('Year').apply(
-            lambda g: n(g[tv]).sum()/n(g[el]).sum()*100 if n(g[el]).sum()>0 else np.nan
+            lambda g: to_num(g[tv]).sum()/to_num(g[el]).sum()*100 if to_num(g[el]).sum()>0 else np.nan
+        ,
+            include_groups=False
         ).reset_index(name="Turnout %")
         fig3, ax3 = plt.subplots(figsize=(12,3))
         ax3.fill_between(tr['Year'].astype(str), tr['Turnout %'], alpha=0.2, color=GOLD)
@@ -466,9 +468,9 @@ def page_overview(df):
         top_parties_list = df[wc].value_counts().head(8).index.tolist()
         heat_rows = []
         for yr, grp in df.groupby('Year'):
-            tv_sum = n(grp[tv]).sum()
+            tv_sum = to_num(grp[tv]).sum()
             for p in top_parties_list:
-                pv = n(grp[grp[wc]==p][tv]).sum()
+                pv = to_num(grp[grp[wc]==p][tv]).sum()
                 heat_rows.append({"Year": yr, "Party": p, "Vote %": pv/tv_sum*100 if tv_sum>0 else 0})
         hdf = pd.DataFrame(heat_rows).pivot(index='Party', columns='Year', values='Vote %').fillna(0)
         hdf.columns = [str(c) for c in hdf.columns]
@@ -618,7 +620,7 @@ def page_dashboard(df):
                     [c for c in custom_metric_cols if c in df.columns]
         show_cols = [c for c in show_cols if c in df.columns]
         if show_cols:
-            st.dataframe(df[show_cols].head(30), use_container_width=True, hide_index=True)
+            st.dataframe(df[show_cols].head(30), width='stretch', hide_index=True)
         else:
             st.info("Custom metrics not yet visible — save them in the Custom Metrics tab first.")
 
@@ -639,8 +641,8 @@ def page_parties(df):
         for yr, grp in df.groupby('Year'):
             ts = grp[mc_c].nunique() if mc_c in grp.columns else len(grp)
             won = (grp[wc]==party).sum()
-            tv_sum = n(grp[tv]).sum() if tv in grp.columns else np.nan
-            pv  = n(grp[grp[wc]==party][tv]).sum() if (tv in grp.columns and won>0) else 0
+            tv_sum = to_num(grp[tv]).sum() if tv in grp.columns else np.nan
+            pv  = to_num(grp[grp[wc]==party][tv]).sum() if (tv in grp.columns and won>0) else 0
             vp  = pv/tv_sum*100 if tv_sum>0 else np.nan
             sr  = won/ts*100 if ts>0 else np.nan
             rows.append({"Party":party,"Year":yr,"Seats Won":int(won),
@@ -648,7 +650,7 @@ def page_parties(df):
                          "Vote %":round(vp,2) if pd.notna(vp) else np.nan})
     sr_df = pd.DataFrame(rows)
     st.markdown('<div class="section-title">Election-by-Election Stats</div>', unsafe_allow_html=True)
-    st.dataframe(sr_df, use_container_width=True, hide_index=True)
+    st.dataframe(sr_df, width='stretch', hide_index=True)
 
     c1,c2 = st.columns(2)
     with c1:
@@ -677,7 +679,7 @@ def page_parties(df):
         pdf["Pattern"] = pdf["Win Rate %"].apply(
             lambda r: "🏰 Stronghold" if r>=75 else "🏘️ Neighbourhood" if r>=50 else "🎲 Chance" if r>=25 else "⚔️ Hostile")
         with st.expander(f"**{party}** — {len(pdf)} constituencies"):
-            st.dataframe(pdf.sort_values("Times Won",ascending=False), use_container_width=True, hide_index=True)
+            st.dataframe(pdf.sort_values("Times Won",ascending=False), width='stretch', hide_index=True)
 
     # Margin distribution
     if mg in df.columns and tv in df.columns:
@@ -685,8 +687,8 @@ def page_parties(df):
         fig3,ax3=plt.subplots(figsize=(10,4))
         for i,party in enumerate(sel):
             data=df[df[wc]==party]
-            mgns=n(data[mg]).dropna()
-            tvs=n(data[tv]).reindex(mgns.index)
+            mgns=to_num(data[mg]).dropna()
+            tvs=to_num(data[tv]).reindex(mgns.index)
             pct=(mgns/tvs*100).dropna()
             if not pct.empty:
                 pct.hist(bins=20,alpha=0.6,label=party,color=PAL[i%len(PAL)],ax=ax3)
@@ -701,7 +703,7 @@ def page_families(df):
     tv = smart_col(df,"Votes Polled")
     seats = df.groupby(['Year','Party Family']).size().unstack(fill_value=0)
     st.markdown('<div class="section-title">Seats Won by Party Family</div>', unsafe_allow_html=True)
-    st.dataframe(seats, use_container_width=True)
+    st.dataframe(seats, width='stretch')
     c1,c2=st.columns(2)
     with c1:
         fig,ax=plt.subplots(figsize=(7,4.5))
@@ -727,15 +729,15 @@ def page_blocs(df):
     rows=[]
     for yr,grp in df.groupby('Year'):
         ts=grp[mc_c].nunique() if mc_c in grp.columns else len(grp)
-        tvs=n(grp[tv]).sum() if tv in grp.columns else np.nan
+        tvs=to_num(grp[tv]).sum() if tv in grp.columns else np.nan
         for b in ['LDF','UDF','NDA']:
             sub=grp[grp['Bloc']==b]
-            s=len(sub); v=n(sub[tv]).sum() if tv in sub.columns else 0
+            s=len(sub); v=to_num(sub[tv]).sum() if tv in sub.columns else 0
             rows.append({"Year":yr,"Bloc":b,"Seats Won":s,
                          "Vote %":round(v/tvs*100,2) if tvs and tvs>0 else np.nan,
                          "Seat %":round(s/ts*100,2) if ts>0 else np.nan})
     bdf=pd.DataFrame(rows)
-    st.dataframe(bdf, use_container_width=True, hide_index=True)
+    st.dataframe(bdf, width='stretch', hide_index=True)
     c1,c2=st.columns(2)
     with c1:
         fig,ax=plt.subplots(figsize=(7,4))
@@ -787,7 +789,7 @@ def page_stats(df):
     all_years=sorted(df['Year'].unique()); rows=[]
     for yr in all_years:
         grp=df[df['Year']==yr]; ts=grp[mc_c].nunique() if mc_c in grp.columns else len(grp)
-        tvs=n(grp[tv]).sum()
+        tvs=to_num(grp[tv]).sum()
         pw=grp[wc].value_counts(); pv=grp.groupby(wc)[tv].apply(lambda x: pd.to_numeric(x, errors='coerce').sum())
         sp=(pw/ts*100).values.tolist(); vp=(pv/tvs*100).values.tolist() if tvs>0 else []
         nl=min(len(sp),len(vp)); sp,vp=sp[:nl],vp[:nl]
@@ -798,15 +800,15 @@ def page_stats(df):
             row["ENEP"]=round(enep(vp),3); row["ENPP"]=round(enpp(sp),3)
             row["HHI"]=round(hhi(vp),4); row["Frac."]=round(frac(vp),3)
         if el in grp.columns:
-            te=n(grp[el]).sum()
+            te=to_num(grp[el]).sum()
             row["Turnout %"]=round(tvs/te*100,2) if te>0 else np.nan
         if mg in grp.columns:
-            ms=n(grp[mg]); tvss=n(grp[tv])
+            ms=to_num(grp[mg]); tvss=to_num(grp[tv])
             row["Avg Margin"]=round(ms.mean(),0)
             row["Close (<5%)"]=int(((ms/tvss)<0.05).sum())
         rows.append(row)
     idx=pd.DataFrame(rows).set_index("Year")
-    st.dataframe(idx, use_container_width=True)
+    st.dataframe(idx, width='stretch')
 
     # Pedersen
     if len(all_years)>=2:
@@ -814,11 +816,11 @@ def page_stats(df):
         for i in range(1,len(all_years)):
             y1,y2=all_years[i-1],all_years[i]
             g1=df[df['Year']==y1]; g2=df[df['Year']==y2]
-            t1=n(g1[tv]).sum(); t2=n(g2[tv]).sum()
+            t1=to_num(g1[tv]).sum(); t2=to_num(g2[tv]).sum()
             if t1>0 and t2>0:
                 pts=set(g1[wc].unique())|set(g2[wc].unique())
-                d1={p:n(g1[g1[wc]==p][tv]).sum()/t1*100 for p in pts}
-                d2={p:n(g2[g2[wc]==p][tv]).sum()/t2*100 for p in pts}
+                d1={p:to_num(g1[g1[wc]==p][tv]).sum()/t1*100 for p in pts}
+                d2={p:to_num(g2[g2[wc]==p][tv]).sum()/t2*100 for p in pts}
                 pr.append({"Year":y2,"Pedersen":round(pedersen(d1,d2),3)})
         if pr:
             pf=pd.DataFrame(pr)
@@ -853,8 +855,8 @@ def page_swing(df):
     if ya==yb: st.error("Select two different years."); return
 
     da=df[df['Year']==ya]; db=df[df['Year']==yb]
-    va=n(da[tv]).sum() if tv in da.columns else 0
-    vb=n(db[tv]).sum() if tv in db.columns else 0
+    va=to_num(da[tv]).sum() if tv in da.columns else 0
+    vb=to_num(db[tv]).sum() if tv in db.columns else 0
     st.markdown('<div class="metric-row">'
         + mc(f"Votes {ya}", f"{va/1e6:.2f}M")
         + mc(f"Votes {yb}", f"{vb/1e6:.2f}M")
@@ -871,7 +873,7 @@ def page_swing(df):
     if not flipped.empty:
         flipped["Bloc Before"]=flipped[f"Winner {ya}"].apply(assign_bloc)
         flipped["Bloc After"]=flipped[f"Winner {yb}"].apply(assign_bloc)
-        st.dataframe(flipped, use_container_width=True, hide_index=True)
+        st.dataframe(flipped, width='stretch', hide_index=True)
         c1,c2=st.columns(2)
         with c1:
             g=flipped[f"Winner {yb}"].value_counts().head(10).reset_index()
@@ -896,8 +898,8 @@ def page_swing(df):
     if mg in df.columns:
         st.markdown('<div class="section-title">Margin Distributions</div>', unsafe_allow_html=True)
         fig_m,ax_m=plt.subplots(figsize=(10,3.5))
-        n(da[mg]).dropna().hist(bins=25,alpha=0.65,label=str(ya),ax=ax_m,color=A2)
-        n(db[mg]).dropna().hist(bins=25,alpha=0.65,label=str(yb),ax=ax_m,color=A1)
+        to_num(da[mg]).dropna().hist(bins=25,alpha=0.65,label=str(ya),ax=ax_m,color=A2)
+        to_num(db[mg]).dropna().hist(bins=25,alpha=0.65,label=str(yb),ax=ax_m,color=A1)
         ax_m.set_xlabel("Margin (Votes)"); ax_m.legend()
         plt.tight_layout(); st.pyplot(fig_m); plt.close()
 
@@ -916,11 +918,11 @@ def page_constituency(df):
     i1,i2,i3,i4=st.columns(4)
     i1.metric("Category", str(catv))
     i2.metric("Elections", str(len(cdf)))
-    if tv in cdf.columns: i3.metric("Latest Votes Polled", f"{n(cdf[tv]).iloc[-1]:,.0f}")
+    if tv in cdf.columns: i3.metric("Latest Votes Polled", f"{to_num(cdf[tv]).iloc[-1]:,.0f}")
     if wc in cdf.columns: i4.metric("Last Winner", str(cdf[wc].iloc[-1]))
 
     show=[c for c in ['Year','Win Party','Win Alliance','Win Vote','Run Party','Run Alliance','Run vote','Margin','Votes Polled'] if c in cdf.columns]
-    st.dataframe(cdf[show], use_container_width=True, hide_index=True)
+    st.dataframe(cdf[show], width='stretch', hide_index=True)
 
     c1,c2=st.columns(2)
     with c1:
@@ -934,12 +936,12 @@ def page_constituency(df):
     with c2:
         if mg in cdf.columns:
             fig2,ax2=plt.subplots(figsize=(6,3.5))
-            ax2.bar(cdf['Year'].astype(str),n(cdf[mg]),color=GOLD,alpha=0.8)
+            ax2.bar(cdf['Year'].astype(str),to_num(cdf[mg]),color=GOLD,alpha=0.8)
             ax2.set_title(f"{sel} — Victory Margin")
             plt.tight_layout(); st.pyplot(fig2); plt.close()
 
     if tv in cdf.columns and el in cdf.columns:
-        to=(n(cdf[tv])/n(cdf[el])*100).fillna(0)
+        to=(to_num(cdf[tv])/to_num(cdf[el])*100).fillna(0)
         fig3,ax3=plt.subplots(figsize=(12,2.5))
         ax3.fill_between(cdf['Year'].astype(str),to,alpha=0.25,color=A3)
         ax3.plot(cdf['Year'].astype(str),to,marker='o',color=A3,linewidth=2)
@@ -963,7 +965,7 @@ def page_regional(df):
         if wc in df.columns:
             tp=df.groupby(['Year',wc]).size().reset_index(name='S')
             tp=tp[tp['S']>=3].pivot(index='Year',columns=wc,values='S').fillna(0)
-            st.dataframe(tp.astype(int), use_container_width=True)
+            st.dataframe(tp.astype(int), width='stretch')
         return
 
     df2=df.copy(); df2['Region']=df2[dc].astype(str).apply(region)
@@ -995,7 +997,7 @@ def page_reserved(df):
             fig,ax=plt.subplots(figsize=(5,4))
             ax.barh(tr["Party"][::-1],tr["Seats"][::-1],color=A1)
             ax.set_xlabel("Seats"); plt.tight_layout(); st.pyplot(fig); plt.close()
-            st.dataframe(tr, use_container_width=True, hide_index=True)
+            st.dataframe(tr, width='stretch', hide_index=True)
     with c2:
         st.markdown('<div class="section-title">General Seats</div>', unsafe_allow_html=True)
         if not gen.empty:
@@ -1003,7 +1005,7 @@ def page_reserved(df):
             fig2,ax2=plt.subplots(figsize=(5,4))
             ax2.barh(tg["Party"][::-1],tg["Seats"][::-1],color=A2)
             ax2.set_xlabel("Seats"); plt.tight_layout(); st.pyplot(fig2); plt.close()
-            st.dataframe(tg, use_container_width=True, hide_index=True)
+            st.dataframe(tg, width='stretch', hide_index=True)
 
     if not res.empty and not gen.empty:
         both=set(res[wc].unique())&set(gen[wc].unique())
@@ -1046,7 +1048,7 @@ def page_custom_metrics(df_edited, df_f):
                                 preview_df[["Year", smart_col(preview_df,"Constituency Name"), mname]].head(8)
                                 if smart_col(preview_df,"Constituency Name") in preview_df.columns
                                 else preview_df[[mname]].head(8),
-                                use_container_width=True, hide_index=True
+                                width='stretch', hide_index=True
                             )
                         with col2:
                             vals = pd.to_numeric(preview_df[mname], errors="coerce").dropna()
@@ -1127,7 +1129,7 @@ def page_custom_metrics(df_edited, df_f):
                     draft_name = st.session_state.get("draft_name","metric")
                     if draft_name in test_df.columns:
                         st.success(f"✅ Column **{draft_name}** created successfully!")
-                        st.dataframe(test_df[[draft_name]].head(10), use_container_width=True, hide_index=True)
+                        st.dataframe(test_df[[draft_name]].head(10), width='stretch', hide_index=True)
                     else:
                         st.warning("Code ran but column was not created. Check the column name in your code.")
                 except Exception as e:
@@ -1171,7 +1173,7 @@ def page_ai(df):
         f"Cols:{list(df.columns)}. "
         f"Top parties:{top5}. "
         f"Votes/yr:{yr_v}. "
-        + (f"Margin mean/min/max:{n(df[mg]).mean():.0f}/{n(df[mg]).min():.0f}/{n(df[mg]).max():.0f}." if mg in df.columns else "")
+        + (f"Margin mean/min/max:{to_num(df[mg]).mean():.0f}/{to_num(df[mg]).min():.0f}/{to_num(df[mg]).max():.0f}." if mg in df.columns else "")
     )
 
     # ── Session state init ───────────────────────────────────────────────
@@ -1246,7 +1248,7 @@ def page_ai(df):
         st.session_state.ai_pending = None
 
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.5-flash-lite')
+        model = genai.GenerativeModel('gemini-2.0-flash')
 
         plot_bytes  = None
         result_value = None
@@ -1305,7 +1307,7 @@ def page_ai(df):
                 )
                 try:
                     pick_model = genai.GenerativeModel(
-                        'gemini-2.5-flash-lite',
+                        'gemini-2.0-flash',
                         generation_config={"temperature":0,"max_output_tokens":5,"candidate_count":1}
                     )
                     chosen_chart = pick_model.generate_content(chart_pick_prompt).text.strip().lower().split()[0]
@@ -1578,7 +1580,7 @@ for _cm_name, _cm_code in st.session_state.custom_metrics.items():
 
 df_edited=df_f.copy()
 with st.expander("📝 View & Edit Raw Data", expanded=False):
-    df_edited=st.data_editor(df_f,num_rows="dynamic",use_container_width=True,key="ed")
+    df_edited=st.data_editor(df_f,num_rows="dynamic",width='stretch',key="ed")
     st.download_button("📥 Download CSV",df_edited.to_csv(index=False).encode(),"election_data.csv","text/csv")
 
 # ── NAVIGATION ───────────────────────────────
@@ -1592,7 +1594,7 @@ cols=st.columns(len(NAV))
 for col,(icon,name) in zip(cols,NAV):
     with col:
         label=f"{icon} {name}"
-        if st.button(label,key=f"nav_{name}",use_container_width=True):
+        if st.button(label,key=f"nav_{name}",width='stretch'):
             st.session_state.tab=name; st.rerun()
 
 # Active indicator
