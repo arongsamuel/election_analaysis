@@ -141,11 +141,21 @@ BLOCS = {
 # 4. HELPERS
 # ─────────────────────────────────────────────
 def smart_col(df, name):
+    """Returns the COLUMN NAME (string) that best matches `name`."""
     if name in df.columns: return name
     for c in df.columns:
         if c.strip().lower() == name.strip().lower(): return c
     m = difflib.get_close_matches(name, df.columns, n=1, cutoff=0.45)
     return m[0] if m else name
+
+def smart_get(df, name):
+    """Returns the actual column SERIES. Use this in metric code, not smart_lookup.
+    Example:  pd.to_numeric(smart_get(df, 'Win Vote'), errors='coerce') + 1
+    """
+    return df[smart_col(df, name)]
+
+# Alias kept for backward compat — but AI is now instructed to use smart_get
+smart_lookup = smart_col
 
 def assign_family(p):
     for f, ms in PARTY_FAMILIES.items():
@@ -256,12 +266,31 @@ def load_data(uploaded_files):
 # ─────────────────────────────────────────────
 def gen_metric_code(df, name, desc):
     if not api_key: return "# No API key"
+    # Send only column names + numeric dtypes — skip object cols to save tokens
+    num_cols = {c: str(df[c].dtype) for c in df.columns if df[c].dtype in ['float64','int64','int32','float32']}
+    all_cols = list(df.columns)
+    p = (f"ONE-LINE pandas assignment. df['{name}']=...\n"
+         f"Cols:{all_cols}\nNumeric:{num_cols}\nLogic:{desc}\n"
+         f"Rules:smart_get(df,'Col') returns Series. pd.to_numeric(x,errors='coerce') for math.\n"
+         f"Ex:df['m']=pd.to_numeric(smart_get(df,'Win Vote'),errors='coerce')/pd.to_numeric(smart_get(df,'Votes Polled'),errors='coerce')*100\n"
+         f"Output:single assignment line only,no comments,no imports,no markdown")
     genai.configure(api_key=api_key)
-    p = f"""Python Pandas expert. Create column '{name}' in `df`.
-Columns: {list(df.columns)}. Logic: "{desc}"
-Use smart_lookup(df,'col') for columns. pd.to_numeric(...,errors='coerce') for math.
-Return ONLY code, no markdown."""
-    return genai.GenerativeModel('gemini-2.5-flash-lite').generate_content(p).text.strip()
+    model = genai.GenerativeModel('gemini-2.5-flash-lite',
+        generation_config={"temperature":0,"max_output_tokens":120,"candidate_count":1})
+    code = ""
+    for attempt in range(3):
+        try:
+            code = model.generate_content(p).text.replace("```python","").replace("```","").strip()
+            # strip any accidental multi-line output — take only the assignment line
+            code = next((l for l in code.splitlines() if l.strip().startswith(f"df['{name}']")), code)
+            test_df = df.head(5).copy()
+            exec(code, {"df":test_df,"pd":pd,"np":np,"smart_get":smart_get,"smart_lookup":smart_col})
+            if name in test_df.columns and test_df[name].notna().any():
+                return code
+            p += f"\nFAIL:all-None. Code:{code}\nRemember smart_get returns Series not name."
+        except Exception as e:
+            p += f"\nERR:{e} Code:{code}\nFix."
+    return code
 
 def query_ai(query, df):
     if not api_key: return None, None, "No API key."
@@ -957,7 +986,7 @@ def page_custom_metrics(df_edited, df_f):
                 # Preview on current data
                 try:
                     preview_df = df_f.head(10).copy()
-                    exec(mcode, {"df": preview_df, "pd": pd, "np": np, "smart_lookup": smart_col})
+                    exec(mcode, {"df": preview_df, "pd": pd, "np": np, "smart_lookup": smart_col, "smart_get": smart_get})
                     if mname in preview_df.columns:
                         col1, col2 = st.columns([2,1])
                         with col1:
@@ -1020,7 +1049,7 @@ def page_custom_metrics(df_edited, df_f):
             if st.button("Test & Save Manual Code", key="cm_manual_save"):
                 try:
                     test_df = df_f.head(50).copy()
-                    exec(manual_code, {"df": test_df, "pd": pd, "np": np, "smart_lookup": smart_col})
+                    exec(manual_code, {"df": test_df, "pd": pd, "np": np, "smart_lookup": smart_col, "smart_get": smart_get})
                     st.success("✅ Code ran successfully!")
                     st.session_state.custom_metrics[manual_name] = manual_code
                     st.rerun()
@@ -1042,7 +1071,7 @@ def page_custom_metrics(df_edited, df_f):
             if st.button("🧪 Test on sample data", key="cm_test"):
                 try:
                     test_df = df_f.head(50).copy()
-                    exec(edited_code, {"df": test_df, "pd": pd, "np": np, "smart_lookup": smart_col})
+                    exec(edited_code, {"df": test_df, "pd": pd, "np": np, "smart_lookup": smart_col, "smart_get": smart_get})
                     draft_name = st.session_state.get("draft_name","metric")
                     if draft_name in test_df.columns:
                         st.success(f"✅ Column **{draft_name}** created successfully!")
@@ -1055,7 +1084,7 @@ def page_custom_metrics(df_edited, df_f):
             if st.button("💾 Save to all tabs", key="cm_save", type="primary"):
                 try:
                     test_df = df_f.head(20).copy()
-                    exec(edited_code, {"df": test_df, "pd": pd, "np": np, "smart_lookup": smart_col})
+                    exec(edited_code, {"df": test_df, "pd": pd, "np": np, "smart_lookup": smart_col, "smart_get": smart_get})
                     draft_name = st.session_state.get("draft_name","metric")
                     st.session_state.custom_metrics[draft_name] = edited_code
                     del st.session_state.draft_code
@@ -1206,7 +1235,10 @@ Columns available: {list(df.columns)}
 Task: Write Python code to answer this question: "{prompt}"
 
 RULES:
-- Use smart_lookup(df, 'col_name') to safely access any column.
+- To access column data, use smart_get(df, 'col_name') which returns the Series.
+  smart_lookup(df, 'col_name') only returns the column name string — do NOT pass it to pd.to_numeric.
+  CORRECT: pd.to_numeric(smart_get(df, 'Win Vote'), errors='coerce')
+  WRONG:   pd.to_numeric(smart_lookup(df, 'Win Vote'), errors='coerce')
 - Always store the PRIMARY ANSWER in a variable called `result` — this must be a
   short string, number, or small dict/list (max ~200 chars). NOT a dataframe.
   Example: result = f"CPM won 75 seats in 2011 with 35.2% vote share"
@@ -1225,7 +1257,7 @@ RULES:
                 code_used = raw.replace("```python","").replace("```","").strip()
                 g = {
                     "df": df, "plt": plt, "sns": sns, "pd": pd, "np": np,
-                    "smart_lookup": smart_col,
+                    "smart_lookup": smart_col, "smart_get": smart_get,
                     "fig": None, "result": None,
                     "GOLD":"#c9a84c","A1":"#e05c4b","A2":"#4b9ce8","A3":"#6bcb77",
                     "MUTED":"#8fa3c0","TEXT_MAIN":"#e8e4da","DARK_BG":"#0b1120","CARD_BG":"#0f1e30",
@@ -1352,7 +1384,7 @@ else:
 # Runs AFTER filtering so new columns appear in df_edited
 for _cm_name, _cm_code in st.session_state.custom_metrics.items():
     try:
-        exec(_cm_code, {"df": df_f, "pd": pd, "smart_lookup": smart_col, "np": np})
+        exec(_cm_code, {"df": df_f, "pd": pd, "np": np, "smart_lookup": smart_col, "smart_get": smart_get})
     except Exception as _e:
         st.warning(f"Custom metric '{_cm_name}' error: {_e}")
 
