@@ -113,85 +113,12 @@ def set_plot_style():
 set_plot_style()
 
 # ─────────────────────────────────────────────
-# 2. API KEY & MODEL SETUP
+# 2. API KEY
 # ─────────────────────────────────────────────
-#
-# Model choice matters for quota:
-#   gemini-2.5-flash-lite  — has a FREE-TIER cap of 20 req/day even on paid plans
-#   gemini-2.0-flash       — paid-tier model, no free-tier cap, use this on Tier 1+
-#
-# Switch GEMINI_MODEL here to change globally.
-
-GEMINI_MODEL = "gemini-2.0-flash"
-
 if "GEMINI_API_KEY" in st.secrets:
     api_key = st.secrets["GEMINI_API_KEY"]
 else:
     api_key = None
-
-import time as _time
-
-def gemini_call(prompt: str, max_retries: int = 4) -> str:
-    """
-    Central wrapper for all Gemini API calls.
-
-    Why this exists:
-      - Uses GEMINI_MODEL globally so model is changed in one place
-      - Exponential backoff on 429 ResourceExhausted errors
-        (Gemini includes a retry_delay in the error — we respect it)
-      - Never crashes the app on quota errors — returns a clear message
-
-    Backoff schedule (seconds): 5, 15, 45, 90
-    """
-    if not api_key:
-        return "⚠️ No API key configured."
-
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(GEMINI_MODEL)
-
-    delays = [5, 15, 45, 90]
-
-    for attempt in range(max_retries):
-        try:
-            response = model.generate_content(prompt)
-            return response.text.strip()
-
-        except Exception as e:
-            err_str = str(e)
-
-            # Check for quota / rate-limit error
-            is_quota = (
-                "429" in err_str or
-                "ResourceExhausted" in err_str or
-                "quota" in err_str.lower() or
-                "rate" in err_str.lower()
-            )
-
-            if is_quota:
-                # Try to extract the retry_delay from the error message
-                import re as _re
-                match = _re.search(r"retry_delay\s*\{\s*seconds:\s*(\d+)", err_str)
-                wait = int(match.group(1)) if match else delays[min(attempt, len(delays)-1)]
-
-                if attempt < max_retries - 1:
-                    # Show a non-blocking status message while waiting
-                    with st.status(f"⏳ Quota limit hit — waiting {wait}s before retry (attempt {attempt+1}/{max_retries})…", expanded=False):
-                        _time.sleep(wait)
-                    continue
-                else:
-                    return (
-                        f"⚠️ Quota limit reached after {max_retries} attempts. "
-                        f"Error: {err_str[:200]}\n\n"
-                        f"The model in use is **{GEMINI_MODEL}**. "
-                        f"If you are seeing free-tier quota errors on a paid plan, "
-                        f"check that your API key is attached to a billing-enabled project "
-                        f"at https://ai.dev/rate-limit"
-                    )
-            else:
-                # Non-quota error — raise immediately so callers can handle
-                raise
-
-    return "⚠️ Max retries exceeded."
 
 # ─────────────────────────────────────────────
 # 3. PARTY / BLOC DEFINITIONS
@@ -329,26 +256,25 @@ def load_data(uploaded_files):
 # ─────────────────────────────────────────────
 def gen_metric_code(df, name, desc):
     if not api_key: return "# No API key"
+    genai.configure(api_key=api_key)
     p = f"""Python Pandas expert. Create column '{name}' in `df`.
 Columns: {list(df.columns)}. Logic: "{desc}"
 Use smart_lookup(df,'col') for columns. pd.to_numeric(...,errors='coerce') for math.
 Return ONLY code, no markdown."""
-    return gemini_call(p)
+    return genai.GenerativeModel('gemini-2.5-flash-lite').generate_content(p).text.strip()
 
 def query_ai(query, df):
-    """Legacy query function used by Dashboard. Uses gemini_call() for safe quota handling."""
     if not api_key: return None, None, "No API key."
+    genai.configure(api_key=api_key)
     try: sample = df.sample(n=5).to_markdown()
     except: sample = df.head(5).to_markdown()
     p = f"""Expert Kerala Election Analyst. DataFrame `df` available.
 Use smart_lookup(df,'col') for columns. For plots: fig=. For text: answer=.
 Columns: {list(df.columns)}\nSample:\n{sample}\nUSER: {query}"""
+    model = genai.GenerativeModel('gemini-2.5-flash-lite')
     for _ in range(3):
         try:
-            raw = gemini_call(p)
-            if raw.startswith("⚠️"):
-                return None, raw, ""
-            code = raw.replace("```python","").replace("```","").strip()
+            code = model.generate_content(p).text.replace("```python","").replace("```","").strip()
             g = {"df":df,"plt":plt,"sns":sns,"pd":pd,"np":np,"smart_lookup":smart_col,"fig":None,"answer":None}
             exec(code, g)
             return g.get('fig'), g.get('answer'), code
@@ -1254,11 +1180,17 @@ def page_ai(df):
     if prompt:
         st.session_state.ai_messages.append({"role":"user","content":prompt})
 
+        genai.configure(api_key=api_key)
+
         # ── TWO-STAGE PIPELINE ────────────────────────────────────────────
-        # Stage 1: Run Python against real data → compact `result` string.
-        # Stage 2: Narrate result naturally (tiny token call).
-        # Both stages use gemini_call() which handles 429 backoff automatically.
+        # Stage 1: Always run Python against real data to get exact results.
+        #   Gemini writes the computation code; we exec it on the full df.
+        #   This guarantees factual accuracy — no hallucination from summaries.
+        # Stage 2: Pass ONLY the compact result (not raw rows) to Gemini for
+        #   natural-language narration. Very token-efficient.
         # ─────────────────────────────────────────────────────────────────────
+
+        model = genai.GenerativeModel('gemini-2.5-flash-lite')
 
         wants_chart = any(w in prompt.lower() for w in
                           ["plot","chart","graph","show","visualise","visualize","trend","heatmap"])
@@ -1289,10 +1221,7 @@ RULES:
 
         for attempt in range(3):
             try:
-                raw = gemini_call(code_prompt)
-                if raw.startswith("⚠️"):
-                    result_value = raw
-                    break
+                raw = model.generate_content(code_prompt).text
                 code_used = raw.replace("```python","").replace("```","").strip()
                 g = {
                     "df": df, "plt": plt, "sns": sns, "pd": pd, "np": np,
@@ -1326,10 +1255,7 @@ Question asked: {prompt}
 Computed result: {result_value if result_value is not None else "(chart generated — describe what the chart would show based on the question)"}
 {"A chart was also generated." if plot_bytes else ""}"""
 
-        narration = gemini_call(narrate_prompt)
-        if narration.startswith("⚠️"):
-            # quota hit on narration — just use the raw result as the answer
-            narration = str(result_value) if result_value else narration
+        narration = model.generate_content(narrate_prompt).text.strip()
 
         st.session_state.ai_messages.append({"role":"assistant","content":narration})
         st.session_state.ai_plots.append(plot_bytes)
