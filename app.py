@@ -19,6 +19,58 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# ─────────────────────────────────────────────
+# 1b. PASSWORD PROTECTION
+# ─────────────────────────────────────────────
+# Set APP_PASSWORD in st.secrets to enable.
+# Auth token stored in URL query params (persists in browser tab).
+# Clear by removing ?auth=... from URL or clicking Sign Out.
+
+def _check_password():
+    secret_pw = st.secrets.get("APP_PASSWORD", None)
+    if not secret_pw:
+        return True  # no password configured — open access
+
+    import hashlib
+    token = hashlib.sha256(secret_pw.encode()).hexdigest()[:16]
+
+    # Check if already authenticated via query param
+    params = st.query_params
+    if params.get("auth") == token:
+        return True
+
+    # Show login screen
+    st.markdown("""
+    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b1120;">
+      <div style="background:linear-gradient(135deg,#0d1b2a,#1a2c45);border:1px solid #2a4060;
+                  border-radius:16px;padding:2.5rem 3rem;max-width:400px;width:100%;text-align:center;
+                  box-shadow:0 20px 60px rgba(0,0,0,0.5);">
+        <div style="font-size:2.5rem;margin-bottom:0.5rem;">🗳️</div>
+        <div style="font-family:'Playfair Display',serif;font-size:1.6rem;font-weight:900;
+                    color:#c9a84c;margin-bottom:0.3rem;">Kerala Election Atlas</div>
+        <div style="font-size:0.75rem;color:#8fa3c0;letter-spacing:2px;text-transform:uppercase;
+                    margin-bottom:1.8rem;">Private Access</div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Overlay the input on top
+    col1, col2, col3 = st.columns([1,2,1])
+    with col2:
+        entered = st.text_input("Password", type="password", key="_pw_input",
+                                placeholder="Enter access password",
+                                label_visibility="collapsed")
+        if st.button("Unlock →", use_container_width=True, key="_pw_btn", type="primary"):
+            if entered == secret_pw:
+                st.query_params["auth"] = token
+                st.rerun()
+            else:
+                st.error("Incorrect password.")
+    st.stop()
+
+_check_password()
+
+
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=DM+Sans:wght@300;400;500;600&display=swap');
@@ -275,7 +327,7 @@ def gen_metric_code(df, name, desc):
          f"Ex:df['m']=pd.to_numeric(smart_get(df,'Win Vote'),errors='coerce')/pd.to_numeric(smart_get(df,'Votes Polled'),errors='coerce')*100\n"
          f"Output:single assignment line only,no comments,no imports,no markdown")
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.5-flash-lite',
+    model = genai.GenerativeModel('gemini-2.5-flash-lite'),
         generation_config={"temperature":0,"max_output_tokens":120,"candidate_count":1})
     code = ""
     for attempt in range(3):
@@ -1200,26 +1252,74 @@ def page_ai(df):
         result_value = None
         code_used   = ""
 
+        # ── CHART TYPE CATALOGUE ─────────────────────────────────────────
+        # Maps short chart keys → matplotlib snippet hints for the code generator
+        CHART_SPECS = {
+            "line":    "ax.plot(x, y, marker='o', color=COLOR); fill_between for area",
+            "bar":     "ax.bar(x, y) or ax.barh(y, x) for horizontal; add bar_label",
+            "stacked": "ax.bar(x, y1, label=L1); ax.bar(x, y2, bottom=y1, label=L2)",
+            "pie":     "ax.pie(sizes, labels=lbls, autopct='%1.1f%%', wedgeprops={'edgecolor':'#0b1120'})",
+            "heatmap": "sns.heatmap(pivot_df, cmap='YlOrBr', annot=True, fmt='.1f', ax=ax)",
+            "box":     "sns.boxplot(data=df, x=cat_col, y=num_col, ax=ax)",
+            "scatter": "ax.scatter(x, y, c=colors, alpha=0.7, s=60)",
+            "area":    "ax.fill_between(x, y, alpha=0.3); ax.plot(x, y)",
+        }
+
         # ── Thinking animation ────────────────────────────────────────────
         with st.status("🧠 Thinking…", expanded=True) as thinking:
 
-            # Step 1 — understand the question in context
-            thinking.update(label="🔍 Reading conversation context…")
             conv_summary = st.session_state.ai_conv_summary
 
-            # Step 2 — generate computation code
+            # ── Step 1: Decide IF a chart is needed and WHICH type ────────
+            thinking.update(label="🔍 Choosing best visualisation…")
+            is_chart_q = any(w in prompt.lower() for w in
+                ["plot","chart","graph","show","visualis","trend","compare","heatmap",
+                 "distribution","breakdown","over time","by year","across"])
+
+            chosen_chart = None
+            if is_chart_q:
+                chart_pick_prompt = (
+                    f"Question: {prompt}\n"
+                    + (f"Context:{conv_summary}\n" if conv_summary else "")
+                    + f"Data cols:{list(df.columns)}\n"
+                    f"Pick the single best chart type for this question. "
+                    f"Options: line, bar, stacked, pie, heatmap, box, scatter, area\n"
+                    f"Rules: line=trends over time; bar=compare categories; stacked=part-of-whole over time; "
+                    f"pie=share/proportion (≤8 slices); heatmap=two-dim matrix; box=distribution; "
+                    f"scatter=correlation; area=cumulative trend.\n"
+                    f"Reply with ONLY the one word chart type, nothing else."
+                )
+                try:
+                    pick_model = genai.GenerativeModel(
+                        'gemini-2.5-flash-lite',
+                        generation_config={"temperature":0,"max_output_tokens":5,"candidate_count":1}
+                    )
+                    chosen_chart = pick_model.generate_content(chart_pick_prompt).text.strip().lower().split()[0]
+                    if chosen_chart not in CHART_SPECS:
+                        chosen_chart = "line"  # safe fallback
+                    thinking.update(label=f"📊 Chart type selected: {chosen_chart}")
+                except Exception:
+                    chosen_chart = "line"
+
+            # ── Step 2: Generate computation + chart code ─────────────────
             thinking.update(label="⚙️ Computing answer from data…")
+
+            chart_hint = (
+                f"\nChart type to use: {chosen_chart}. Hint: {CHART_SPECS.get(chosen_chart,'')}."
+                if chosen_chart else ""
+            )
 
             code_prompt = (
                 f"Kerala election DataFrame `df`. {DATA_CONTEXT}\n"
                 f"Cols:{list(df.columns)}\n"
                 + (f"Conversation so far:{conv_summary}\n" if conv_summary else "")
                 + f"Task:{prompt}\n"
+                + chart_hint + "\n"
                 f"Rules:\n"
                 f"- smart_get(df,'Col') returns Series. smart_lookup returns name string only.\n"
                 f"- CORRECT:pd.to_numeric(smart_get(df,'Win Vote'),errors='coerce')\n"
                 f"- Store short answer in `result` (str/num, max 200 chars).\n"
-                f"- Chart→fig with facecolor='#0b1120', axes facecolor='#0f1e30', "
+                f"- Dark theme: fig facecolor='#0b1120', axes facecolor='#0f1e30', "
                 f"tick/label color='#8fa3c0', title color='#c9a84c'.\n"
                 f"- No print/st calls. Return ONLY code, no markdown."
             )
@@ -1240,7 +1340,7 @@ def page_ai(df):
                     exec(code_used, g)
                     result_value = g.get("result")
                     if g.get("fig"):
-                        thinking.update(label="🎨 Rendering chart…")
+                        thinking.update(label=f"🎨 Rendering {chosen_chart or 'chart'}…")
                         plt.tight_layout()
                         plot_bytes = save_fig_hd(g["fig"])
                         store_plot(g["fig"], f"ai_{assistant_idx}")
@@ -1249,32 +1349,31 @@ def page_ai(df):
                 except Exception as e:
                     code_prompt += f"\nERR:{e}.Fix."
 
-            # Step 3 — narrate
+            # ── Step 3: Narrate ───────────────────────────────────────────
             thinking.update(label="✍️ Writing response…")
             narrate_prompt = (
-                f"Kerala election expert. 2-4 sentence prose answer. "
+                f"Kerala election expert. 2-4 sentence prose. "
                 f"Confident, specific, no hedging, no bullets, no markdown.\n"
                 + (f"Conv context:{conv_summary}\n" if conv_summary else "")
                 + f"Q:{prompt}\n"
                 f"Result:{result_value if result_value is not None else '(see chart)'}\n"
+                + (f"Chart type used: {chosen_chart}. " if chosen_chart else "")
                 + ("Chart included." if plot_bytes else "")
             )
             narration = model.generate_content(narrate_prompt).text.strip()
 
-            # Step 4 — compress conversation into rolling summary (token-efficient)
-            # We never send the full history — only a ≤120-word summary
+            # ── Step 4: Compress conversation summary ─────────────────────
             thinking.update(label="📝 Updating conversation memory…")
             prev = st.session_state.ai_conv_summary
             compress_prompt = (
-                f"Summarise this conversation in ≤80 words. Keep key facts and numbers. No filler.\n"
-                f"Previous summary:{prev}\n"
-                f"New exchange — User:{prompt} | Answer:{narration[:300]}"
+                f"Summarise in ≤80 words. Keep key facts+numbers. No filler.\n"
+                f"Prev:{prev}\n"
+                f"User:{prompt} | Answer:{narration[:300]}"
             )
             try:
-                new_summary = model.generate_content(compress_prompt).text.strip()
-                st.session_state.ai_conv_summary = new_summary
+                st.session_state.ai_conv_summary = model.generate_content(compress_prompt).text.strip()
             except Exception:
-                pass  # keep old summary if compression fails
+                pass
 
             thinking.update(label="✅ Done", state="complete", expanded=False)
 
@@ -1319,6 +1418,11 @@ with st.sidebar:
     st.markdown("### ⚙️ Configuration")
     if not api_key:
         api_key = st.text_input("Gemini API Key", type="password")
+    # Sign out — clears the auth token from URL
+    if st.secrets.get("APP_PASSWORD"):
+        if st.button("🔒 Sign Out", key="_signout"):
+            st.query_params.clear()
+            st.rerun()
     st.divider()
     uploaded_files = st.file_uploader("Upload Excel/CSV", accept_multiple_files=True, type=['xlsx','xls','csv'])
 
