@@ -327,7 +327,7 @@ def gen_metric_code(df, name, desc):
          f"Ex:df['m']=pd.to_numeric(smart_get(df,'Win Vote'),errors='coerce')/pd.to_numeric(smart_get(df,'Votes Polled'),errors='coerce')*100\n"
          f"Output:single assignment line only,no comments,no imports,no markdown")
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.0-flash',
+    model = genai.GenerativeModel('gemini-2.5-flash-lite',
         generation_config={"temperature":0,"max_output_tokens":120,"candidate_count":1})
     code = ""
     for attempt in range(3):
@@ -352,7 +352,7 @@ def query_ai(query, df):
     p = f"""Expert Kerala Election Analyst. DataFrame `df` available.
 Use smart_lookup(df,'col') for columns. For plots: fig=. For text: answer=.
 Columns: {list(df.columns)}\nSample:\n{sample}\nUSER: {query}"""
-    model = genai.GenerativeModel('gemini-2.0-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash-lite')
     for _ in range(3):
         try:
             code = model.generate_content(p).text.replace("```python","").replace("```","").strip()
@@ -711,8 +711,8 @@ def page_families(df):
         plt.tight_layout(); st.pyplot(fig); plt.close()
     with c2:
         if tv in df.columns:
-            fv=df.groupby(['Year','Party Family'])[tv].apply(lambda x: n(x).sum()).unstack(fill_value=0)
-            tot=df.groupby('Year')[tv].apply(lambda x: n(x).sum())
+            fv=df.groupby(['Year','Party Family'])[tv].apply(lambda x: pd.to_numeric(x, errors='coerce').sum()).unstack(fill_value=0)
+            tot=df.groupby('Year')[tv].apply(lambda x: pd.to_numeric(x, errors='coerce').sum())
             fvp=fv.div(tot,axis=0)*100
             fig2,ax2=plt.subplots(figsize=(7,4.5))
             for i,fam in enumerate(fvp.columns):
@@ -788,7 +788,7 @@ def page_stats(df):
     for yr in all_years:
         grp=df[df['Year']==yr]; ts=grp[mc_c].nunique() if mc_c in grp.columns else len(grp)
         tvs=n(grp[tv]).sum()
-        pw=grp[wc].value_counts(); pv=grp.groupby(wc)[tv].apply(lambda x: n(x).sum())
+        pw=grp[wc].value_counts(); pv=grp.groupby(wc)[tv].apply(lambda x: pd.to_numeric(x, errors='coerce').sum())
         sp=(pw/ts*100).values.tolist(); vp=(pv/tvs*100).values.tolist() if tvs>0 else []
         nl=min(len(sp),len(vp)); sp,vp=sp[:nl],vp[:nl]
         row={"Year":yr}
@@ -1165,7 +1165,7 @@ def page_ai(df):
     years = sorted(df['Year'].unique())
     top5 = dict(df[wc].value_counts().head(5)) if wc in df.columns else {}
     yr_v  = {str(k): f"{v/1e6:.1f}M" for k,v in
-             df.groupby('Year')[tv].apply(lambda x: n(x).sum()).items()} if tv in df.columns else {}
+             pd.to_numeric(df[tv], errors='coerce').groupby(df['Year']).sum().items()} if tv in df.columns else {}
     DATA_CONTEXT = (
         f"Kerala Assembly Elections {fmt_year(min(years))}–{fmt_year(max(years))}. "
         f"Cols:{list(df.columns)}. "
@@ -1246,7 +1246,7 @@ def page_ai(df):
         st.session_state.ai_pending = None
 
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.0-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash-lite')
 
         plot_bytes  = None
         result_value = None
@@ -1305,7 +1305,7 @@ def page_ai(df):
                 )
                 try:
                     pick_model = genai.GenerativeModel(
-                        'gemini-2.0-flash',
+                        'gemini-2.5-flash-lite',
                         generation_config={"temperature":0,"max_output_tokens":5,"candidate_count":1}
                     )
                     chosen_chart = pick_model.generate_content(chart_pick_prompt).text.strip().lower().split()[0]
