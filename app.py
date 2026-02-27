@@ -327,7 +327,7 @@ def gen_metric_code(df, name, desc):
          f"Ex:df['m']=pd.to_numeric(smart_get(df,'Win Vote'),errors='coerce')/pd.to_numeric(smart_get(df,'Votes Polled'),errors='coerce')*100\n"
          f"Output:single assignment line only,no comments,no imports,no markdown")
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.5-flash-lite',
+    model = genai.GenerativeModel('gemini-2.0-flash',
         generation_config={"temperature":0,"max_output_tokens":120,"candidate_count":1})
     code = ""
     for attempt in range(3):
@@ -352,7 +352,7 @@ def query_ai(query, df):
     p = f"""Expert Kerala Election Analyst. DataFrame `df` available.
 Use smart_lookup(df,'col') for columns. For plots: fig=. For text: answer=.
 Columns: {list(df.columns)}\nSample:\n{sample}\nUSER: {query}"""
-    model = genai.GenerativeModel('gemini-2.5-flash-lite')
+    model = genai.GenerativeModel('gemini-2.0-flash')
     for _ in range(3):
         try:
             code = model.generate_content(p).text.replace("```python","").replace("```","").strip()
@@ -1246,7 +1246,7 @@ def page_ai(df):
         st.session_state.ai_pending = None
 
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.5-flash-lite')
+        model = genai.GenerativeModel('gemini-2.0-flash')
 
         plot_bytes  = None
         result_value = None
@@ -1305,7 +1305,7 @@ def page_ai(df):
                 )
                 try:
                     pick_model = genai.GenerativeModel(
-                        'gemini-2.5-flash-lite',
+                        'gemini-2.0-flash',
                         generation_config={"temperature":0,"max_output_tokens":5,"candidate_count":1}
                     )
                     chosen_chart = pick_model.generate_content(chart_pick_prompt).text.strip().lower().split()[0]
