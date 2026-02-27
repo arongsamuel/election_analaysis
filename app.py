@@ -1253,41 +1253,55 @@ def page_ai(df):
         code_used   = ""
 
         # ── CHART TYPE CATALOGUE ─────────────────────────────────────────
-        # Maps short chart keys → matplotlib snippet hints for the code generator
         CHART_SPECS = {
-            "line":    "ax.plot(x, y, marker='o', color=COLOR); fill_between for area",
-            "bar":     "ax.bar(x, y) or ax.barh(y, x) for horizontal; add bar_label",
-            "stacked": "ax.bar(x, y1, label=L1); ax.bar(x, y2, bottom=y1, label=L2)",
-            "pie":     "ax.pie(sizes, labels=lbls, autopct='%1.1f%%', wedgeprops={'edgecolor':'#0b1120'})",
-            "heatmap": "sns.heatmap(pivot_df, cmap='YlOrBr', annot=True, fmt='.1f', ax=ax)",
-            "box":     "sns.boxplot(data=df, x=cat_col, y=num_col, ax=ax)",
-            "scatter": "ax.scatter(x, y, c=colors, alpha=0.7, s=60)",
-            "area":    "ax.fill_between(x, y, alpha=0.3); ax.plot(x, y)",
+            "line":    "fig,ax=plt.subplots(); ax.plot(x,y,marker='o',color='#c9a84c'); ax.fill_between(x,y,alpha=0.15,color='#c9a84c')",
+            "bar":     "fig,ax=plt.subplots(); bars=ax.barh(cats,vals,color=colors); ax.bar_label(bars,fmt='%.0f',padding=3,color='#e8e4da')",
+            "stacked": "fig,ax=plt.subplots(); bottom=np.zeros(n); [ax.bar(x,v,bottom=b,label=l) for v,b,l in zip(vals,bottoms,labels)]",
+            "pie":     "fig,ax=plt.subplots(); ax.pie(sizes,labels=lbls,autopct='%1.1f%%',wedgeprops={'edgecolor':'#0b1120','linewidth':1.5},colors=PAL)",
+            "heatmap": "fig,ax=plt.subplots(); sns.heatmap(pivot,cmap='YlOrBr',annot=True,fmt='.1f',linewidths=0.3,linecolor='#1e3250',ax=ax)",
+            "box":     "fig,ax=plt.subplots(); sns.boxplot(data=sub,x=cat_col,y=num_col,palette=dict(zip(cats,PAL)),ax=ax)",
+            "scatter": "fig,ax=plt.subplots(); ax.scatter(x,y,c=colors,alpha=0.7,s=60,edgecolors='none')",
+            "area":    "fig,ax=plt.subplots(); ax.fill_between(x,y,alpha=0.25,color='#c9a84c'); ax.plot(x,y,color='#c9a84c',linewidth=2)",
+        }
+        # Broad keyword list — catches "show me", "where is", "give me", follow-ups, etc.
+        CHART_WORDS = {
+            "plot","chart","graph","show","visual","trend","compare","heatmap",
+            "distribution","breakdown","over time","by year","across","draw","display",
+            "give me","where is","the plot","the chart","the graph","see it","see the",
+            "map it","map the","illustrate","depict","render",
         }
 
         # ── Thinking animation ────────────────────────────────────────────
         with st.status("🧠 Thinking…", expanded=True) as thinking:
 
             conv_summary = st.session_state.ai_conv_summary
+            pl = prompt.lower()
 
-            # ── Step 1: Decide IF a chart is needed and WHICH type ────────
+            # ── Step 1: Detect chart intent — keywords OR conversation context ──
             thinking.update(label="🔍 Choosing best visualisation…")
-            is_chart_q = any(w in prompt.lower() for w in
-                ["plot","chart","graph","show","visualis","trend","compare","heatmap",
-                 "distribution","breakdown","over time","by year","across"])
+
+            # Check current prompt AND last assistant message for chart references
+            last_ai = next((m["content"] for m in reversed(st.session_state.ai_messages)
+                            if m["role"]=="assistant"), "")
+            chart_in_context = any(w in last_ai.lower() for w in ["chart","plot","graph","figure"])
+
+            is_chart_q = (
+                any(w in pl for w in CHART_WORDS) or
+                any(pl.startswith(w) for w in ["show","plot","draw","give","where","see"]) or
+                (chart_in_context and any(w in pl for w in
+                    ["it","the","that","this","one","same","again","also","too"]))
+            )
 
             chosen_chart = None
             if is_chart_q:
                 chart_pick_prompt = (
-                    f"Question: {prompt}\n"
+                    f"Q:{prompt}\n"
                     + (f"Context:{conv_summary}\n" if conv_summary else "")
-                    + f"Data cols:{list(df.columns)}\n"
-                    f"Pick the single best chart type for this question. "
-                    f"Options: line, bar, stacked, pie, heatmap, box, scatter, area\n"
-                    f"Rules: line=trends over time; bar=compare categories; stacked=part-of-whole over time; "
-                    f"pie=share/proportion (≤8 slices); heatmap=two-dim matrix; box=distribution; "
-                    f"scatter=correlation; area=cumulative trend.\n"
-                    f"Reply with ONLY the one word chart type, nothing else."
+                    + f"Cols:{list(df.columns)}\n"
+                    f"Best chart type? Options:line,bar,stacked,pie,heatmap,box,scatter,area\n"
+                    f"line=time trends;bar=category compare;stacked=part-of-whole;pie=≤8 share slices;"
+                    f"heatmap=2d matrix;box=distribution;scatter=correlation;area=cumulative.\n"
+                    f"One word only."
                 )
                 try:
                     pick_model = genai.GenerativeModel(
@@ -1296,69 +1310,140 @@ def page_ai(df):
                     )
                     chosen_chart = pick_model.generate_content(chart_pick_prompt).text.strip().lower().split()[0]
                     if chosen_chart not in CHART_SPECS:
-                        chosen_chart = "line"  # safe fallback
-                    thinking.update(label=f"📊 Chart type selected: {chosen_chart}")
+                        chosen_chart = "line"
+                    thinking.update(label=f"📊 Chart type: {chosen_chart}")
                 except Exception:
                     chosen_chart = "line"
 
             # ── Step 2: Generate computation + chart code ─────────────────
             thinking.update(label="⚙️ Computing answer from data…")
 
-            chart_hint = (
-                f"\nChart type to use: {chosen_chart}. Hint: {CHART_SPECS.get(chosen_chart,'')}."
-                if chosen_chart else ""
-            )
+            # Build a fully self-contained code prompt.
+            # When a chart IS required, the prompt is structured as chart-first
+            # so the model can't skip the fig creation.
+            if chosen_chart:
+                code_prompt = (
+                    f"Kerala election df. {DATA_CONTEXT}\nCols:{list(df.columns)}\n"
+                    + (f"Prior context:{conv_summary}\n" if conv_summary else "")
+                    + f"Task:{prompt}\n\n"
+                    f"YOU MUST create a matplotlib figure. This is mandatory — DO NOT skip it.\n"
+                    f"Chart type REQUIRED: {chosen_chart}\n"
+                    f"Boilerplate to start with:\n{CHART_SPECS[chosen_chart]}\n\n"
+                    f"Steps:\n"
+                    f"1. Compute the data needed (use smart_get(df,'Col') for Series access).\n"
+                    f"2. Create fig,ax using plt.subplots(figsize=(10,4)).\n"
+                    f"3. Apply dark theme: fig.patch.set_facecolor('#0b1120'); ax.set_facecolor('#0f1e30'); "
+                    f"ax.tick_params(colors='#8fa3c0'); ax.title.set_color('#c9a84c').\n"
+                    f"4. Draw the {chosen_chart} chart on ax.\n"
+                    f"5. Set result=<one-line string summary of key finding>.\n"
+                    f"DO NOT print. DO NOT use st.*. Return ONLY Python, no markdown."
+                )
+            else:
+                code_prompt = (
+                    f"Kerala election df. {DATA_CONTEXT}\nCols:{list(df.columns)}\n"
+                    + (f"Prior context:{conv_summary}\n" if conv_summary else "")
+                    + f"Task:{prompt}\n"
+                    f"Rules: smart_get(df,'Col') returns Series. Store answer in result (str≤200).\n"
+                    f"No fig needed. No print/st. Return ONLY Python."
+                )
 
-            code_prompt = (
-                f"Kerala election DataFrame `df`. {DATA_CONTEXT}\n"
-                f"Cols:{list(df.columns)}\n"
-                + (f"Conversation so far:{conv_summary}\n" if conv_summary else "")
-                + f"Task:{prompt}\n"
-                + chart_hint + "\n"
-                f"Rules:\n"
-                f"- smart_get(df,'Col') returns Series. smart_lookup returns name string only.\n"
-                f"- CORRECT:pd.to_numeric(smart_get(df,'Win Vote'),errors='coerce')\n"
-                f"- Store short answer in `result` (str/num, max 200 chars).\n"
-                f"- Dark theme: fig facecolor='#0b1120', axes facecolor='#0f1e30', "
-                f"tick/label color='#8fa3c0', title color='#c9a84c'.\n"
-                f"- No print/st calls. Return ONLY code, no markdown."
-            )
+            # ── plt proxy: captures ANY figure the model creates, regardless
+            #    of variable name. Wraps plt.subplots / plt.figure so the
+            #    returned Figure is always stored in _captured["fig"].
+            class _PltProxy:
+                """Transparent proxy around matplotlib.pyplot.
+                Intercepts subplots() and figure() to capture the created Figure."""
+                def __init__(self, real_plt, store):
+                    self._plt = real_plt
+                    self._store = store
+                def subplots(self, *a, **kw):
+                    fig, ax = self._plt.subplots(*a, **kw)
+                    self._store["fig"] = fig
+                    return fig, ax
+                def figure(self, *a, **kw):
+                    fig = self._plt.figure(*a, **kw)
+                    self._store["fig"] = fig
+                    return fig
+                def __getattr__(self, name):
+                    return getattr(self._plt, name)
 
-            for attempt in range(3):
+            def _make_env():
+                _cap = {"fig": None}
+                _plt_proxy = _PltProxy(plt, _cap)
+                env = {
+                    "df":df, "plt":_plt_proxy, "sns":sns, "pd":pd, "np":np,
+                    "smart_lookup":smart_col, "smart_get":smart_get,
+                    "fig":None, "result":None,
+                    "_cap":_cap,
+                    "GOLD":"#c9a84c","A1":"#e05c4b","A2":"#4b9ce8","A3":"#6bcb77",
+                    "MUTED":"#8fa3c0","TEXT_MAIN":"#e8e4da","DARK_BG":"#0b1120","CARD_BG":"#0f1e30",
+                    "PAL":["#c9a84c","#e05c4b","#4b9ce8","#6bcb77","#b07aff","#ff9f7a","#7af0d8"],
+                    "BLOC_COLORS":{"LDF":"#e05c4b","UDF":"#4b9ce8","NDA":"#f0a500","Other":"#888"},
+                }
+                return env, _cap
+
+            def _get_fig(g, cap):
+                """Return figure from exec env: explicit g['fig'] first,
+                then proxy-captured fig, then any Figure in globals."""
+                import matplotlib.figure as _mf
+                if isinstance(g.get("fig"), _mf.Figure): return g["fig"]
+                if isinstance(cap.get("fig"), _mf.Figure): return cap["fig"]
+                # last resort: scan all globals for a Figure object
+                for v in g.values():
+                    if isinstance(v, _mf.Figure): return v
+                # also check plt's open figures
+                figs = [plt.figure(n) for n in plt.get_fignums()]
+                return figs[-1] if figs else None
+
+            for attempt in range(4):
                 try:
                     raw = model.generate_content(code_prompt).text
                     code_used = raw.replace("```python","").replace("```","").strip()
-                    g = {
-                        "df":df,"plt":plt,"sns":sns,"pd":pd,"np":np,
-                        "smart_lookup":smart_col,"smart_get":smart_get,
-                        "fig":None,"result":None,
-                        "GOLD":"#c9a84c","A1":"#e05c4b","A2":"#4b9ce8","A3":"#6bcb77",
-                        "MUTED":"#8fa3c0","TEXT_MAIN":"#e8e4da","DARK_BG":"#0b1120","CARD_BG":"#0f1e30",
-                        "PAL":["#c9a84c","#e05c4b","#4b9ce8","#6bcb77","#b07aff","#ff9f7a","#7af0d8"],
-                        "BLOC_COLORS":{"LDF":"#e05c4b","UDF":"#4b9ce8","NDA":"#f0a500","Other":"#888"},
-                    }
+                    g, cap = _make_env()
                     exec(code_used, g)
                     result_value = g.get("result")
-                    if g.get("fig"):
+
+                    captured_fig = _get_fig(g, cap)
+                    if captured_fig is not None:
                         thinking.update(label=f"🎨 Rendering {chosen_chart or 'chart'}…")
+                        # Apply dark theme in case model forgot
+                        captured_fig.patch.set_facecolor('#0b1120')
+                        for ax_ in captured_fig.get_axes():
+                            ax_.set_facecolor('#0f1e30')
+                            ax_.tick_params(colors='#8fa3c0')
+                            ax_.xaxis.label.set_color('#8fa3c0')
+                            ax_.yaxis.label.set_color('#8fa3c0')
+                        plt.figure(captured_fig.number)
                         plt.tight_layout()
-                        plot_bytes = save_fig_hd(g["fig"])
-                        store_plot(g["fig"], f"ai_{assistant_idx}")
-                        plt.close(g["fig"])
-                    break
+                        plot_bytes = save_fig_hd(captured_fig)
+                        store_plot(captured_fig, f"ai_{assistant_idx}")
+                        plt.close(captured_fig)
+                        # close any other open figures from this exec
+                        for n in plt.get_fignums(): plt.close(plt.figure(n))
+                        break
+
+                    elif chosen_chart:
+                        code_prompt += (
+                            f"\nAttempt {attempt+1} produced no figure."
+                            f" Call plt.subplots() and assign result to fig,ax."
+                            f" Draw the {chosen_chart} chart. This is mandatory."
+                        )
+                    else:
+                        break  # text-only question, no fig needed
+
                 except Exception as e:
-                    code_prompt += f"\nERR:{e}.Fix."
+                    code_prompt += f"\nERR {attempt+1}:{str(e)[:120]} Fix."
+                    # close any leaked figures
+                    for n in plt.get_fignums(): plt.close(plt.figure(n))
 
             # ── Step 3: Narrate ───────────────────────────────────────────
             thinking.update(label="✍️ Writing response…")
             narrate_prompt = (
-                f"Kerala election expert. 2-4 sentence prose. "
-                f"Confident, specific, no hedging, no bullets, no markdown.\n"
+                f"Kerala election expert. 2-4 prose sentences. Specific numbers. No bullets/markdown.\n"
                 + (f"Conv context:{conv_summary}\n" if conv_summary else "")
-                + f"Q:{prompt}\n"
-                f"Result:{result_value if result_value is not None else '(see chart)'}\n"
-                + (f"Chart type used: {chosen_chart}. " if chosen_chart else "")
-                + ("Chart included." if plot_bytes else "")
+                + f"Q:{prompt}\nResult:{result_value or '(see chart)'}\n"
+                + (f"A {chosen_chart} chart was generated. Do NOT describe what it would show — it IS shown." if plot_bytes
+                   else "No chart was generated — answer fully in text.")
             )
             narration = model.generate_content(narrate_prompt).text.strip()
 
