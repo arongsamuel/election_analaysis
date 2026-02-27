@@ -1106,205 +1106,204 @@ def page_ai(df):
         </div>""", unsafe_allow_html=True)
         return
 
-    # Compute a compact data summary (not the full df — token-efficient)
-    wc  = smart_col(df,"Win Party");  tv  = smart_col(df,"Votes Polled")
-    el  = smart_col(df,"Electors");   mg  = smart_col(df,"Margin")
-    cc  = smart_col(df,"Constituency Name")
+    # ── Static dataset context (built once, reused every call) ──────────
+    wc = smart_col(df,"Win Party"); tv = smart_col(df,"Votes Polled")
+    el = smart_col(df,"Electors");  mg = smart_col(df,"Margin")
+    cc = smart_col(df,"Constituency Name")
     years = sorted(df['Year'].unique())
+    top5 = dict(df[wc].value_counts().head(5)) if wc in df.columns else {}
+    yr_v  = {str(k): f"{v/1e6:.1f}M" for k,v in
+             df.groupby('Year')[tv].apply(lambda x: n(x).sum()).items()} if tv in df.columns else {}
+    DATA_CONTEXT = (
+        f"Kerala Assembly Elections {fmt_year(min(years))}–{fmt_year(max(years))}. "
+        f"Cols:{list(df.columns)}. "
+        f"Top parties:{top5}. "
+        f"Votes/yr:{yr_v}. "
+        + (f"Margin mean/min/max:{n(df[mg]).mean():.0f}/{n(df[mg]).min():.0f}/{n(df[mg]).max():.0f}." if mg in df.columns else "")
+    )
 
-    # Build a tight context string instead of sending raw rows
-    context_lines = [
-        f"Dataset: Kerala Assembly Elections, {fmt_year(min(years))}–{fmt_year(max(years))}",
-        f"Rows: {len(df):,} | Constituencies: {df[cc].nunique() if cc in df.columns else '?'} | Years: {[str(y) for y in years]}",
-        f"Columns: {list(df.columns)}",
-    ]
-    if wc in df.columns:
-        top5 = df[wc].value_counts().head(5)
-        context_lines.append(f"Top 5 parties by wins: {dict(top5)}")
-    if 'Bloc' in df.columns:
-        bloc_wins = df.groupby(['Year','Bloc']).size().unstack(fill_value=0).to_dict()
-        context_lines.append(f"Bloc wins by year (sample): LDF/UDF/NDA pattern present")
-    if tv in df.columns:
-        yr_votes = df.groupby('Year')[tv].apply(lambda x: n(x).sum()).to_dict()
-        context_lines.append(f"Total votes by year: { {str(k): f'{v/1e6:.1f}M' for k,v in list(yr_votes.items())[-5:]} }")
-    if mg in df.columns:
-        context_lines.append(f"Margin stats: mean={n(df[mg]).mean():.0f}, min={n(df[mg]).min():.0f}, max={n(df[mg]).max():.0f}")
+    # ── Session state init ───────────────────────────────────────────────
+    for key, val in [("ai_messages",[]), ("ai_plots",[]), ("ai_codes",[]),
+                     ("ai_conv_summary",""), ("ai_pending",None)]:
+        if key not in st.session_state:
+            st.session_state[key] = val
 
-    DATA_CONTEXT = "\n".join(context_lines)
-
-    # Session state
-    if "ai_messages" not in st.session_state: st.session_state.ai_messages = []
-    if "ai_plots"    not in st.session_state: st.session_state.ai_plots    = []   # list of png bytes
-
-    # Suggested questions
+    # ── Suggested questions (shown only at start) ────────────────────────
     suggestions = [
-        "Which party has the highest strike rate across all elections?",
-        "How has LDF vs UDF dominance changed over decades?",
-        "Which constituencies have never changed their winning party?",
-        "Compare voter turnout trends across all elections",
-        "Which election had the most closely contested seats?",
-        "Show CPM's stronghold vs hostile constituencies",
+        "Which party has the highest strike rate?",
+        "How has LDF vs UDF dominance shifted over decades?",
+        "Plot turnout trend across all elections",
+        "Which constituencies never changed winning party?",
+        "Show CPM's vote share trend as a chart",
+        "Which election had the most razor-thin margins?",
     ]
 
     if not st.session_state.ai_messages:
-        st.markdown("""
-        <div style="background:linear-gradient(135deg,#0f1e30,#142236);border:1px solid #2a4060;
-                    border-radius:12px;padding:1.2rem 1.5rem;margin-bottom:1rem;">
-          <div style="font-family:'Playfair Display',serif;color:#c9a84c;font-size:1rem;margin-bottom:0.6rem;">
-            💡 Try asking…
-          </div>
-          <div style="display:flex;flex-wrap:wrap;gap:0.4rem;">
-        """ + "".join(
-            f'<span style="background:#1a3050;border:1px solid #2a4060;border-radius:20px;'
-            f'padding:0.25rem 0.7rem;font-size:0.78rem;color:#c8d8e8;cursor:pointer;">{q}</span>'
-            for q in suggestions
-        ) + """
-          </div>
-        </div>""", unsafe_allow_html=True)
+        st.markdown(
+            '<div style="background:linear-gradient(135deg,#0f1e30,#142236);border:1px solid #2a4060;'
+            'border-radius:12px;padding:1.2rem 1.5rem;margin-bottom:1.2rem;">'
+            '<div style="font-family:\'Playfair Display\',serif;color:#c9a84c;font-size:1rem;margin-bottom:0.6rem;">💡 Try asking…</div>'
+            '<div style="display:flex;flex-wrap:wrap;gap:0.4rem;">'
+            + "".join(
+                f'<span style="background:#1a3050;border:1px solid #2a4060;border-radius:20px;'
+                f'padding:0.3rem 0.8rem;font-size:0.78rem;color:#c8d8e8;">{q}</span>'
+                for q in suggestions)
+            + '</div></div>',
+            unsafe_allow_html=True)
 
-    # Message history
+    # ── Render existing conversation ─────────────────────────────────────
+    assistant_idx = 0  # tracks which assistant turn we're on for plot/code lookup
     for i, msg in enumerate(st.session_state.ai_messages):
-        role = msg["role"]
-        if role == "user":
-            st.markdown(f"""
-            <div style="display:flex;justify-content:flex-end;margin:0.5rem 0;">
-              <div style="background:#1a3050;border:1px solid #2a4060;border-radius:12px 12px 2px 12px;
-                          padding:0.6rem 1rem;max-width:80%;color:#e8e4da;font-size:0.88rem;">
-                {msg["content"]}
-              </div>
-            </div>""", unsafe_allow_html=True)
+        if msg["role"] == "user":
+            st.markdown(
+                f'<div style="display:flex;justify-content:flex-end;margin:0.6rem 0;">'
+                f'<div style="background:#1a3050;border:1px solid #2a4060;border-radius:12px 12px 2px 12px;'
+                f'padding:0.6rem 1rem;max-width:78%;color:#e8e4da;font-size:0.88rem;">{msg["content"]}</div></div>',
+                unsafe_allow_html=True)
         else:
-            st.markdown(f"""
-            <div style="display:flex;align-items:flex-start;gap:0.6rem;margin:0.5rem 0;">
-              <div style="background:#c9a84c;border-radius:50%;width:28px;height:28px;
-                          display:flex;align-items:center;justify-content:center;
-                          flex-shrink:0;font-size:0.9rem;">🗳️</div>
-              <div style="background:#0f1e30;border:1px solid #1e3250;border-radius:2px 12px 12px 12px;
-                          padding:0.7rem 1rem;max-width:85%;color:#e8e4da;font-size:0.88rem;line-height:1.55;">
-                {msg["content"]}
-              </div>
-            </div>""", unsafe_allow_html=True)
-            # Show any saved plot for this message
-            if i < len(st.session_state.ai_plots) and st.session_state.ai_plots[i]:
-                st.image(st.session_state.ai_plots[i], use_column_width=True)
-                st.download_button("📥 Download chart (HD)", st.session_state.ai_plots[i],
-                                   f"ai_chart_{i}.png", "image/png", key=f"ai_dl_{i}")
-            # Near-invisible code peek — styled to be unobtrusive
-            ai_codes = st.session_state.get("ai_codes", [])
-            code_idx = i // 2  # every other message is assistant
-            if code_idx < len(ai_codes) and ai_codes[code_idx]:
+            st.markdown(
+                f'<div style="display:flex;align-items:flex-start;gap:0.6rem;margin:0.6rem 0;">'
+                f'<div style="background:#c9a84c;border-radius:50%;width:28px;height:28px;'
+                f'display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:0.9rem;">🗳️</div>'
+                f'<div style="background:#0f1e30;border:1px solid #1e3250;border-radius:2px 12px 12px 12px;'
+                f'padding:0.7rem 1rem;max-width:84%;color:#e8e4da;font-size:0.88rem;line-height:1.6;">'
+                f'{msg["content"]}</div></div>',
+                unsafe_allow_html=True)
+            # Plot for this assistant turn
+            if assistant_idx < len(st.session_state.ai_plots) and st.session_state.ai_plots[assistant_idx]:
+                pb = st.session_state.ai_plots[assistant_idx]
+                st.image(pb, use_column_width=True)
+                st.download_button("📥 HD chart", pb, f"ai_chart_{assistant_idx}.png",
+                                   "image/png", key=f"ai_dl_{assistant_idx}")
+            # Code peek
+            if assistant_idx < len(st.session_state.ai_codes) and st.session_state.ai_codes[assistant_idx]:
+                code_html = st.session_state.ai_codes[assistant_idx].replace("<","&lt;").replace(">","&gt;")
                 st.markdown(
-                    f'<details style="margin-top:0.2rem;">'
-                    f'<summary style="font-size:0.68rem;color:#2a4060;cursor:pointer;'
-                    f'list-style:none;opacity:0.5;">⟨ computation ⟩</summary>'
-                    f'<pre style="background:#060d16;color:#3a5a78;font-size:0.7rem;'
-                    f'padding:0.5rem;border-radius:6px;overflow-x:auto;margin-top:0.3rem;">'
-                    f'{ai_codes[code_idx].replace("<","&lt;").replace(">","&gt;")}</pre>'
-                    f'</details>',
-                    unsafe_allow_html=True
-                )
+                    f'<details style="margin-top:0.15rem;">'
+                    f'<summary style="font-size:0.67rem;color:#2a4060;cursor:pointer;list-style:none;opacity:0.45;">⟨ computation ⟩</summary>'
+                    f'<pre style="background:#060d16;color:#3a5a78;font-size:0.69rem;padding:0.5rem;'
+                    f'border-radius:6px;overflow-x:auto;margin-top:0.25rem;">{code_html}</pre></details>',
+                    unsafe_allow_html=True)
+            assistant_idx += 1
 
-    # Input
+    # ── If a response is pending (set before rerun), process it now ──────
+    # This runs AFTER the history is rendered so the thinking animation
+    # appears at the bottom, below prior messages.
+    if st.session_state.ai_pending:
+        prompt = st.session_state.ai_pending
+        st.session_state.ai_pending = None
+
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-2.5-flash-lite')
+
+        plot_bytes  = None
+        result_value = None
+        code_used   = ""
+
+        # ── Thinking animation ────────────────────────────────────────────
+        with st.status("🧠 Thinking…", expanded=True) as thinking:
+
+            # Step 1 — understand the question in context
+            thinking.update(label="🔍 Reading conversation context…")
+            conv_summary = st.session_state.ai_conv_summary
+
+            # Step 2 — generate computation code
+            thinking.update(label="⚙️ Computing answer from data…")
+
+            code_prompt = (
+                f"Kerala election DataFrame `df`. {DATA_CONTEXT}\n"
+                f"Cols:{list(df.columns)}\n"
+                + (f"Conversation so far:{conv_summary}\n" if conv_summary else "")
+                + f"Task:{prompt}\n"
+                f"Rules:\n"
+                f"- smart_get(df,'Col') returns Series. smart_lookup returns name string only.\n"
+                f"- CORRECT:pd.to_numeric(smart_get(df,'Win Vote'),errors='coerce')\n"
+                f"- Store short answer in `result` (str/num, max 200 chars).\n"
+                f"- Chart→fig with facecolor='#0b1120', axes facecolor='#0f1e30', "
+                f"tick/label color='#8fa3c0', title color='#c9a84c'.\n"
+                f"- No print/st calls. Return ONLY code, no markdown."
+            )
+
+            for attempt in range(3):
+                try:
+                    raw = model.generate_content(code_prompt).text
+                    code_used = raw.replace("```python","").replace("```","").strip()
+                    g = {
+                        "df":df,"plt":plt,"sns":sns,"pd":pd,"np":np,
+                        "smart_lookup":smart_col,"smart_get":smart_get,
+                        "fig":None,"result":None,
+                        "GOLD":"#c9a84c","A1":"#e05c4b","A2":"#4b9ce8","A3":"#6bcb77",
+                        "MUTED":"#8fa3c0","TEXT_MAIN":"#e8e4da","DARK_BG":"#0b1120","CARD_BG":"#0f1e30",
+                        "PAL":["#c9a84c","#e05c4b","#4b9ce8","#6bcb77","#b07aff","#ff9f7a","#7af0d8"],
+                        "BLOC_COLORS":{"LDF":"#e05c4b","UDF":"#4b9ce8","NDA":"#f0a500","Other":"#888"},
+                    }
+                    exec(code_used, g)
+                    result_value = g.get("result")
+                    if g.get("fig"):
+                        thinking.update(label="🎨 Rendering chart…")
+                        plt.tight_layout()
+                        plot_bytes = save_fig_hd(g["fig"])
+                        store_plot(g["fig"], f"ai_{assistant_idx}")
+                        plt.close(g["fig"])
+                    break
+                except Exception as e:
+                    code_prompt += f"\nERR:{e}.Fix."
+
+            # Step 3 — narrate
+            thinking.update(label="✍️ Writing response…")
+            narrate_prompt = (
+                f"Kerala election expert. 2-4 sentence prose answer. "
+                f"Confident, specific, no hedging, no bullets, no markdown.\n"
+                + (f"Conv context:{conv_summary}\n" if conv_summary else "")
+                + f"Q:{prompt}\n"
+                f"Result:{result_value if result_value is not None else '(see chart)'}\n"
+                + ("Chart included." if plot_bytes else "")
+            )
+            narration = model.generate_content(narrate_prompt).text.strip()
+
+            # Step 4 — compress conversation into rolling summary (token-efficient)
+            # We never send the full history — only a ≤120-word summary
+            thinking.update(label="📝 Updating conversation memory…")
+            prev = st.session_state.ai_conv_summary
+            compress_prompt = (
+                f"Summarise this conversation in ≤80 words. Keep key facts and numbers. No filler.\n"
+                f"Previous summary:{prev}\n"
+                f"New exchange — User:{prompt} | Answer:{narration[:300]}"
+            )
+            try:
+                new_summary = model.generate_content(compress_prompt).text.strip()
+                st.session_state.ai_conv_summary = new_summary
+            except Exception:
+                pass  # keep old summary if compression fails
+
+            thinking.update(label="✅ Done", state="complete", expanded=False)
+
+        # ── Persist results ───────────────────────────────────────────────
+        st.session_state.ai_messages.append({"role":"assistant","content":narration})
+        st.session_state.ai_plots.append(plot_bytes)
+        st.session_state.ai_codes.append(code_used)
+        st.rerun()
+
+    # ── Chat input ────────────────────────────────────────────────────────
     prompt = st.chat_input("Ask anything about Kerala election data…")
     if prompt:
         st.session_state.ai_messages.append({"role":"user","content":prompt})
-
-        genai.configure(api_key=api_key)
-
-        # ── TWO-STAGE PIPELINE ────────────────────────────────────────────
-        # Stage 1: Always run Python against real data to get exact results.
-        #   Gemini writes the computation code; we exec it on the full df.
-        #   This guarantees factual accuracy — no hallucination from summaries.
-        # Stage 2: Pass ONLY the compact result (not raw rows) to Gemini for
-        #   natural-language narration. Very token-efficient.
-        # ─────────────────────────────────────────────────────────────────────
-
-        model = genai.GenerativeModel('gemini-2.5-flash-lite')
-
-        wants_chart = any(w in prompt.lower() for w in
-                          ["plot","chart","graph","show","visualise","visualize","trend","heatmap"])
-
-        # ── Stage 1: Generate & run computation code ──────────────────────
-        code_prompt = f"""You are a Python/pandas expert working with this Kerala election DataFrame.
-
-DataFrame `df` summary:
-{DATA_CONTEXT}
-
-Columns available: {list(df.columns)}
-
-Task: Write Python code to answer this question: "{prompt}"
-
-RULES:
-- To access column data, use smart_get(df, 'col_name') which returns the Series.
-  smart_lookup(df, 'col_name') only returns the column name string — do NOT pass it to pd.to_numeric.
-  CORRECT: pd.to_numeric(smart_get(df, 'Win Vote'), errors='coerce')
-  WRONG:   pd.to_numeric(smart_lookup(df, 'Win Vote'), errors='coerce')
-- Always store the PRIMARY ANSWER in a variable called `result` — this must be a
-  short string, number, or small dict/list (max ~200 chars). NOT a dataframe.
-  Example: result = f"CPM won 75 seats in 2011 with 35.2% vote share"
-- If a chart is requested, create a matplotlib figure named `fig` (dark theme, facecolor='#0b1120').
-  Style axes: facecolor='#0f1e30', tick/label colors='#8fa3c0', title color='#c9a84c'.
-- Do NOT print anything. Do NOT use st.* functions.
-- Return ONLY valid Python code, no markdown fences."""
-
-        plot_bytes = None
-        result_value = None
-        code_used = ""
-
-        for attempt in range(3):
-            try:
-                raw = model.generate_content(code_prompt).text
-                code_used = raw.replace("```python","").replace("```","").strip()
-                g = {
-                    "df": df, "plt": plt, "sns": sns, "pd": pd, "np": np,
-                    "smart_lookup": smart_col, "smart_get": smart_get,
-                    "fig": None, "result": None,
-                    "GOLD":"#c9a84c","A1":"#e05c4b","A2":"#4b9ce8","A3":"#6bcb77",
-                    "MUTED":"#8fa3c0","TEXT_MAIN":"#e8e4da","DARK_BG":"#0b1120","CARD_BG":"#0f1e30",
-                    "PAL": ["#c9a84c","#e05c4b","#4b9ce8","#6bcb77","#b07aff","#ff9f7a","#7af0d8"],
-                    "BLOC_COLORS": {"LDF":"#e05c4b","UDF":"#4b9ce8","NDA":"#f0a500","Other":"#888"},
-                }
-                exec(code_used, g)
-
-                result_value = g.get("result")
-
-                if g.get("fig"):
-                    plt.tight_layout()
-                    plot_bytes = save_fig_hd(g["fig"])
-                    store_plot(g["fig"], f"ai_{len(st.session_state.ai_messages)}")
-                    plt.close(g["fig"])
-                break
-            except Exception as e:
-                code_prompt += f"\n\nPrevious attempt failed: {e}\nFix the error and try again."
-
-        # ── Stage 2: Narrate the result naturally (tiny token cost) ───────
-        # Only send the compact result string to Gemini — never raw data rows.
-        narrate_prompt = f"""You are a Kerala election expert. Narrate this result naturally in 2-4 sentences.
-Write as if explaining to a political analyst — confident, specific, no hedging.
-No bullet points. No markdown. Just clear flowing prose.
-
-Question asked: {prompt}
-Computed result: {result_value if result_value is not None else "(chart generated — describe what the chart would show based on the question)"}
-{"A chart was also generated." if plot_bytes else ""}"""
-
-        narration = model.generate_content(narrate_prompt).text.strip()
-
-        st.session_state.ai_messages.append({"role":"assistant","content":narration})
-        st.session_state.ai_plots.append(plot_bytes)
-
-        # Store code invisibly for the reveal button
-        if "ai_codes" not in st.session_state: st.session_state.ai_codes = []
-        st.session_state.ai_codes.append(code_used)
-
+        # Set pending so thinking animation renders after history
+        st.session_state.ai_pending = prompt
         st.rerun()
 
-    # Code reveal at bottom — almost invisible
+    # ── Footer: conversation memory peek + clear ─────────────────────────
     if st.session_state.ai_messages:
-        c1, c2 = st.columns([6,1])
-        with c2:
+        col_sum, col_clr = st.columns([5,1])
+        with col_sum:
+            if st.session_state.ai_conv_summary:
+                with st.expander("🧠 Conversation memory", expanded=False):
+                    st.caption(st.session_state.ai_conv_summary)
+        with col_clr:
             if st.button("🗑️ Clear", key="ai_clear"):
-                st.session_state.ai_messages = []
-                st.session_state.ai_plots    = []
+                for k in ["ai_messages","ai_plots","ai_codes","ai_pending"]:
+                    st.session_state[k] = [] if k != "ai_pending" else None
+                st.session_state.ai_conv_summary = ""
                 st.rerun()
 
 # 9. MAIN APP
