@@ -155,7 +155,6 @@ PAL = [GOLD, A1, A2, A3, "#b07aff", "#ff9f7a", "#7af0d8", "#ffde7a", "#c080ff", 
 
 CONSTITUENCY_NAME_ALIASES = {
     "vatakara": "Vadakara",
-    "vatakara": "Vadakara",
     "manjeswar": "Manjeshwar",
     "manjeshwaram": "Manjeshwar",
     "kazhakoottam": "Kazhakkoottam",
@@ -171,6 +170,21 @@ CONSTITUENCY_NAME_ALIASES = {
     "perumbavoor": "Perumbavoor",
     "malampuzha": "Malampuzha",
     "cherthala": "Cherthala",
+    "sulthanbathery": "Sulthan Bathery",
+    "sultanbathery": "Sulthan Bathery",
+    "sulthbathery": "Sulthan Bathery",
+    "sulthan bathery": "Sulthan Bathery",
+    "sultan bathery": "Sulthan Bathery",
+    "bathery": "Sulthan Bathery",
+    "sulthanbatherysc": "Sulthan Bathery",
+    "sultanbatherysc": "Sulthan Bathery",
+    "payyannur": "Payyanur",
+    "payyanur": "Payyanur",
+    "kozhikode north": "Kozhikode North",
+    "kozhikode south": "Kozhikode South",
+    "thrissur": "Thrissur",
+    "kunnamkulam": "Kunnamkulam",
+    "koduvally": "Koduvally",
 }
 
 def set_plot_style():
@@ -277,6 +291,36 @@ def normalize_constituency_name(v):
         return None
     return CONSTITUENCY_NAME_ALIASES.get(key, text.title())
 
+def build_constituency_reference(geojson):
+    ref = {}
+    for feature in geojson.get("features", []):
+        props = feature.get("properties") or {}
+        name = props.get("AC_NAME")
+        norm = normalize_constituency_name(name)
+        if norm:
+            ref[norm_text(norm)] = norm
+    return ref
+
+def resolve_constituency_name(value, official_map):
+    base = normalize_constituency_name(value)
+    if not base:
+        return None, None, "missing"
+
+    key = norm_text(base)
+    if key in official_map:
+        return official_map[key], official_map[key], "exact"
+
+    direct_key = norm_text(value)
+    if direct_key in official_map:
+        return official_map[direct_key], official_map[direct_key], "exact"
+
+    matches = difflib.get_close_matches(key, list(official_map.keys()), n=1, cutoff=0.72)
+    if matches:
+        matched = official_map[matches[0]]
+        return matched, matched, "fuzzy"
+
+    return base, None, "unmatched"
+
 def pick_metric_col(df, candidates):
     for name in candidates:
         col = smart_col(df, name)
@@ -288,21 +332,28 @@ def pick_metric_col(df, candidates):
 def load_constituency_geojson():
     with open("KLA_AC_2026.geojson", "r", encoding="utf-8") as f:
         geo = json.load(f)
+    official_map = build_constituency_reference(geo)
     for feature in geo.get("features", []):
         props = feature.setdefault("properties", {})
-        props["__norm_name"] = normalize_constituency_name(props.get("AC_NAME", ""))
+        _, resolved, _ = resolve_constituency_name(props.get("AC_NAME", ""), official_map)
+        props["__norm_name"] = resolved or normalize_constituency_name(props.get("AC_NAME", ""))
     return geo
 
 def build_constituency_summary(df, year):
     cc = smart_col(df, "Constituency Name")
     if cc not in df.columns:
         return None
+    geojson = load_constituency_geojson()
+    official_map = build_constituency_reference(geojson)
 
     year_df = df[df["Year"] == year].copy()
     if year_df.empty:
         return None
 
-    year_df["Constituency Clean"] = year_df[cc].apply(normalize_constituency_name)
+    resolved = year_df[cc].apply(lambda v: resolve_constituency_name(v, official_map))
+    year_df["Constituency Clean"] = resolved.apply(lambda x: x[0])
+    year_df["Map Constituency"] = resolved.apply(lambda x: x[1])
+    year_df["Match Type"] = resolved.apply(lambda x: x[2])
     if year_df.empty:
         return None
 
@@ -341,12 +392,90 @@ def build_constituency_summary(df, year):
             "Avg Margin": avg_margin,
             "Top Party": lead_party,
             "Top Bloc": dominant_bloc,
+            "Map Constituency": ddf["Map Constituency"].dropna().iloc[0] if ddf["Map Constituency"].notna().any() else np.nan,
+            "Match Type": ddf["Match Type"].iloc[0] if "Match Type" in ddf.columns else "exact",
         })
 
     if not rows:
         return None
 
     return pd.DataFrame(rows)
+
+def constituency_match_report(df, year):
+    cc = smart_col(df, "Constituency Name")
+    if cc not in df.columns:
+        return pd.DataFrame()
+    geojson = load_constituency_geojson()
+    official_map = build_constituency_reference(geojson)
+    yr = df[df["Year"] == year].copy()
+    if yr.empty:
+        return pd.DataFrame()
+    uniq = sorted(yr[cc].dropna().astype(str).unique())
+    rows = []
+    for raw in uniq:
+        clean, resolved, match_type = resolve_constituency_name(raw, official_map)
+        rows.append({
+            "Dataset Name": raw,
+            "Normalized": clean,
+            "Map Match": resolved if resolved else "Unmatched",
+            "Match Type": match_type.title(),
+        })
+    return pd.DataFrame(rows)
+
+def build_udf_swing_projection(df, swing_pct):
+    cc = smart_col(df, "Constituency Name")
+    wa = smart_col(df, "Win Alliance")
+    ra = smart_col(df, "Run Alliance")
+    wc = smart_col(df, "Win Party")
+    rc = smart_col(df, "Run Party")
+    mg = smart_col(df, "Margin")
+    tv = smart_col(df, "Votes Polled")
+    if any(c not in df.columns for c in [cc, wa, ra, mg, tv]):
+        return None
+
+    latest_year = sorted(df["Year"].dropna().unique())[-1]
+    latest = df[df["Year"] == latest_year].copy()
+    if latest.empty:
+        return None
+
+    geojson = load_constituency_geojson()
+    official_map = build_constituency_reference(geojson)
+    resolved = latest[cc].apply(lambda v: resolve_constituency_name(v, official_map))
+    latest["Constituency Clean"] = resolved.apply(lambda x: x[0])
+    latest["Map Constituency"] = resolved.apply(lambda x: x[1])
+
+    margin_pct = to_num(latest[mg]) / to_num(latest[tv]) * 100
+    latest["Margin %"] = margin_pct.replace([np.inf, -np.inf], np.nan)
+    latest["Win Bloc Clean"] = latest[wa].astype(str).apply(assign_bloc)
+    latest["Run Bloc Clean"] = latest[ra].astype(str).apply(assign_bloc)
+    latest["Projected Bloc"] = latest["Win Bloc Clean"]
+    latest["Swing Impact %"] = 0.0
+    latest["Projected Flip"] = False
+    latest["Confidence"] = "Safe Hold"
+    latest["Scenario"] = f"UDF +{swing_pct:.0f}%"
+
+    udf_challenge = latest["Win Bloc Clean"].ne("UDF") & latest["Run Bloc Clean"].eq("UDF") & latest["Margin %"].notna()
+    udf_defense = latest["Win Bloc Clean"].eq("UDF") & latest["Run Bloc Clean"].ne("UDF") & latest["Margin %"].notna()
+
+    latest.loc[udf_challenge, "Swing Impact %"] = swing_pct * 2 - latest.loc[udf_challenge, "Margin %"]
+    latest.loc[udf_defense, "Swing Impact %"] = latest.loc[udf_defense, "Margin %"] + swing_pct * 2
+    latest.loc[udf_challenge & (latest["Swing Impact %"] >= 0), "Projected Bloc"] = "UDF"
+    latest.loc[udf_challenge & (latest["Swing Impact %"] >= 0), "Projected Flip"] = True
+
+    closeness = latest["Margin %"].fillna(999)
+    latest.loc[closeness <= swing_pct, "Confidence"] = "High Swing Sensitivity"
+    latest.loc[(closeness > swing_pct) & (closeness <= swing_pct * 2), "Confidence"] = "Competitive"
+    latest.loc[(latest["Projected Flip"]) & (closeness <= swing_pct * 0.75), "Confidence"] = "Likely Flip"
+
+    latest["Top Bloc"] = latest["Projected Bloc"]
+    latest["Constituency"] = latest["Constituency Clean"]
+    latest["Current Winner"] = latest[wc].astype(str) if wc in latest.columns else latest["Win Bloc Clean"]
+    latest["Runner Party"] = latest[rc].astype(str) if rc in latest.columns else latest["Run Bloc Clean"]
+    latest["Top Party"] = latest["Current Winner"]
+    latest.loc[latest["Projected Flip"] & latest["Runner Party"].notna(), "Top Party"] = latest.loc[latest["Projected Flip"] & latest["Runner Party"].notna(), "Runner Party"]
+    latest["Map Constituency"] = latest["Map Constituency"].fillna(latest["Constituency"])
+    cols = ["Constituency", "Map Constituency", "Top Bloc", "Top Party", "Current Winner", "Runner Party", "Win Bloc Clean", "Run Bloc Clean", "Margin %", "Projected Flip", "Confidence", "Scenario"]
+    return latest[cols].copy(), latest_year
 
 def render_kerala_constituency_map(map_df, geojson):
     color_map = {
@@ -355,7 +484,11 @@ def render_kerala_constituency_map(map_df, geojson):
         "NDA": "#f0a500",
         "Other": "#557089",
     }
-    map_rows = {normalize_constituency_name(r["Constituency"]): r for r in map_df.to_dict("records")}
+    map_rows = {
+        normalize_constituency_name(r.get("Map Constituency") or r.get("Constituency")): r
+        for r in map_df.to_dict("records")
+        if normalize_constituency_name(r.get("Map Constituency") or r.get("Constituency"))
+    }
     payload = json.dumps(map_rows)
     geo_payload = json.dumps(geojson)
     html_block = f"""
@@ -411,14 +544,19 @@ def render_kerala_constituency_map(map_df, geojson):
           const turnout = row && row["Turnout %"] != null ? Number(row["Turnout %"]).toFixed(1) + "%" : "NA";
           const votes = row && row["Votes Polled"] != null ? Math.round(Number(row["Votes Polled"])).toLocaleString() : "NA";
           const margin = row && row["Avg Margin"] != null ? Math.round(Number(row["Avg Margin"])).toLocaleString() : "NA";
+          const marginPct = row && row["Margin %"] != null ? Number(row["Margin %"]).toFixed(2) + "%" : "NA";
           const html = row ? `
             <div style="font-weight:700;color:#c9a84c;margin-bottom:6px;">${{row["Constituency"]}}</div>
             <div>Seats: ${{row["Seats"]}}</div>
             <div>Top Party: ${{row["Top Party"]}}</div>
             <div>Top Bloc: ${{row["Top Bloc"]}}</div>
+            ${{row["Scenario"] ? `<div>Scenario: ${{row["Scenario"]}}</div>` : ""}}
+            ${{row["Runner Party"] ? `<div>Runner-Up: ${{row["Runner Party"]}}</div>` : ""}}
             <div>Votes Polled: ${{votes}}</div>
+            ${{row["Margin %"] != null ? `<div>Margin %: ${{marginPct}}</div>` : ""}}
             <div>Turnout: ${{turnout}}</div>
             <div>Avg Margin: ${{margin}}</div>
+            ${{row["Confidence"] ? `<div>Forecast: ${{row["Confidence"]}}</div>` : ""}}
           ` : `
             <div style="font-weight:700;color:#c9a84c;margin-bottom:6px;">${{props.AC_NAME || "Unknown"}}</div>
             <div>No matching election data for current filters</div>
@@ -1265,6 +1403,62 @@ def page_maps(df):
     for col in ["Votes Polled", "Turnout %", "Avg Margin"]:
         show_df[col] = show_df[col].round(1)
     st.dataframe(show_df, width='stretch', hide_index=True)
+
+    st.markdown('<div class="section-title">Name Matching Diagnostics</div>', unsafe_allow_html=True)
+    match_df = constituency_match_report(df, selected_year)
+    if not match_df.empty:
+        fuzzy_df = match_df[match_df["Match Type"].isin(["Fuzzy", "Unmatched"])].copy()
+        if fuzzy_df.empty:
+            st.success("All constituency names matched cleanly to the official GIS boundary file.")
+        else:
+            st.caption("These are the constituency names that needed fuzzy correction or still remain unmatched.")
+            st.dataframe(fuzzy_df.sort_values(["Match Type", "Dataset Name"]), width='stretch', hide_index=True)
+
+    st.markdown('<div class="section-title">UDF Uniform Swing Forecast</div>', unsafe_allow_html=True)
+    st.caption("Projection assumption: a uniform UDF-favouring swing reduces the latest election margin by roughly twice the swing where UDF was runner-up. This is a scenario simulator, not a polling model.")
+
+    swing_tabs = st.tabs(["UDF +2%", "UDF +3%", "UDF +4%"])
+    for swing_tab, swing in zip(swing_tabs, [2.0, 3.0, 4.0]):
+        with swing_tab:
+            projection = build_udf_swing_projection(df, swing)
+            if projection is None:
+                st.info("Need `Constituency Name`, `Win Alliance`, `Run Alliance`, `Margin`, and `Votes Polled` to build the swing forecast.")
+                continue
+            proj_df, base_year = projection
+            geo_names = {
+                normalize_constituency_name((f.get("properties") or {}).get("AC_NAME", ""))
+                for f in geojson.get("features", [])
+            }
+            proj_df = proj_df[proj_df["Map Constituency"].apply(normalize_constituency_name).isin(geo_names)].copy()
+            flips = proj_df[proj_df["Projected Flip"]].copy().sort_values("Margin %")
+            seat_count = proj_df["Top Bloc"].value_counts()
+
+            c_map, c_meta = st.columns([1.2, 0.8])
+            with c_map:
+                render_kerala_constituency_map(proj_df, geojson)
+            with c_meta:
+                st.markdown(
+                    f'<div class="metric-row">'
+                    f'{mc("Base Year", fmt_year(base_year), "Latest election used")}'
+                    f'{mc("Projected UDF Flips", int(flips.shape[0]), f"Under {swing:.0f}% swing")}'
+                    f'{mc("Projected UDF Seats", int(seat_count.get("UDF", 0)), "Scenario total")}'
+                    f'{mc("Projected LDF Seats", int(seat_count.get("LDF", 0)), "Scenario total")}'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+                if flips.empty:
+                    st.info(f"No LDF/NDA-held seats cross the projected threshold under a {swing:.0f}% UDF swing.")
+                else:
+                    st.markdown("**Most Sensitive Seats**")
+                    preview = flips[["Constituency", "Current Winner", "Runner Party", "Margin %", "Confidence"]].copy().head(15)
+                    preview["Margin %"] = preview["Margin %"].round(2)
+                    st.dataframe(preview, width='stretch', hide_index=True)
+
+            if not flips.empty:
+                st.markdown(f"**Projected Flip List: UDF +{swing:.0f}%**")
+                out = flips[["Constituency", "Current Winner", "Top Party", "Margin %", "Confidence"]].copy()
+                out["Margin %"] = out["Margin %"].round(2)
+                st.dataframe(out, width='stretch', hide_index=True)
 
 
 def page_reserved(df):
