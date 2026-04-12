@@ -422,7 +422,103 @@ def constituency_match_report(df, year):
         })
     return pd.DataFrame(rows)
 
-def build_udf_swing_projection(df, swing_pct):
+def parse_prediction_prompt(prompt):
+    base = {"target_bloc": "UDF", "swings": [2.0], "use_split_factor": False, "note": ""}
+    text = str(prompt or "").strip()
+    if not text:
+        return base
+
+    low = text.lower()
+    for bloc in ["UDF", "LDF", "NDA"]:
+        if bloc.lower() in low:
+            base["target_bloc"] = bloc
+            break
+
+    swings = [float(x) for x in re.findall(r'(\d+(?:\.\d+)?)\s*%', text)]
+    if swings:
+        base["swings"] = swings[:4]
+
+    base["use_split_factor"] = any(
+        key in low for key in ["split factor", "iou", "index of opposition unity", "splitting agent"]
+    )
+
+    if api_key:
+        try:
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel(
+                "gemini-2.5-flash-lite",
+                generation_config={"temperature": 0, "max_output_tokens": 220, "candidate_count": 1},
+            )
+            schema_prompt = (
+                "Extract election forecast parameters from the user's request.\n"
+                "Return compact JSON only with keys: target_bloc, swings, use_split_factor, note.\n"
+                "Rules: target_bloc must be one of UDF/LDF/NDA. swings must be an array of numbers in percent. "
+                "use_split_factor must be true if the user wants split-factor or IOU logic. "
+                "note should be one short sentence describing the interpretation.\n"
+                f"USER: {text}"
+            )
+            raw = model.generate_content(schema_prompt).text.strip().replace("```json", "").replace("```", "")
+            parsed = json.loads(raw)
+            if parsed.get("target_bloc") in ["UDF", "LDF", "NDA"]:
+                base["target_bloc"] = parsed["target_bloc"]
+            if isinstance(parsed.get("swings"), list):
+                nums = []
+                for v in parsed["swings"]:
+                    try:
+                        nums.append(float(v))
+                    except Exception:
+                        pass
+                if nums:
+                    base["swings"] = nums[:4]
+            if isinstance(parsed.get("use_split_factor"), bool):
+                base["use_split_factor"] = parsed["use_split_factor"]
+            if parsed.get("note"):
+                base["note"] = str(parsed["note"])
+        except Exception:
+            pass
+    return base
+
+def seat_vote_shares(df):
+    win_vote_col = pick_metric_col(df, ["Win Vote"])
+    run_vote_col = pick_metric_col(df, ["Run vote", "Run Vote"])
+    others_vote_col = pick_metric_col(df, ["Others Vote"])
+    nda_vote_col = pick_metric_col(df, ["NDA BJP Vote"])
+    tv = pick_metric_col(df, ["Votes Polled", "Votes polled"])
+    if not tv:
+        return df
+
+    total_votes = to_num(df[tv]).replace(0, np.nan)
+    df = df.copy()
+    df["Win Vote %"] = to_num(df[win_vote_col]) / total_votes * 100 if win_vote_col else np.nan
+    df["Run Vote %"] = to_num(df[run_vote_col]) / total_votes * 100 if run_vote_col else np.nan
+    df["Others Vote %"] = to_num(df[others_vote_col]) / total_votes * 100 if others_vote_col else np.nan
+    df["NDA Vote %"] = to_num(df[nda_vote_col]) / total_votes * 100 if nda_vote_col else np.nan
+    return df
+
+def bloc_vote_profile(row):
+    votes = {"LDF": 0.0, "UDF": 0.0, "NDA": 0.0, "Other": 0.0}
+    win_bloc = row.get("Win Bloc Clean", "Other")
+    run_bloc = row.get("Run Bloc Clean", "Other")
+    win_share = row.get("Win Vote %")
+    run_share = row.get("Run Vote %")
+    nda_share = row.get("NDA Vote %")
+    others_share = row.get("Others Vote %")
+
+    if pd.notna(win_share):
+        votes[win_bloc] = max(votes.get(win_bloc, 0.0), float(win_share))
+    if pd.notna(run_share):
+        votes[run_bloc] = max(votes.get(run_bloc, 0.0), float(run_share))
+    if pd.notna(nda_share) and "NDA" not in [win_bloc, run_bloc]:
+        votes["NDA"] = max(votes["NDA"], float(nda_share))
+    if pd.notna(others_share):
+        votes["Other"] = max(votes["Other"], float(others_share))
+
+    accounted = sum(v for v in votes.values() if pd.notna(v))
+    if accounted < 99 and votes["Other"] == 0:
+        votes["Other"] = max(0.0, 100 - accounted)
+    return votes
+
+def project_uniform_swing(df, target_bloc, swing_pct, use_split_factor=False):
     cc = smart_col(df, "Constituency Name")
     wa = smart_col(df, "Win Alliance")
     ra = smart_col(df, "Run Alliance")
@@ -443,39 +539,99 @@ def build_udf_swing_projection(df, swing_pct):
     resolved = latest[cc].apply(lambda v: resolve_constituency_name(v, official_map))
     latest["Constituency Clean"] = resolved.apply(lambda x: x[0])
     latest["Map Constituency"] = resolved.apply(lambda x: x[1])
-
-    margin_pct = to_num(latest[mg]) / to_num(latest[tv]) * 100
-    latest["Margin %"] = margin_pct.replace([np.inf, -np.inf], np.nan)
+    latest = seat_vote_shares(latest)
     latest["Win Bloc Clean"] = latest[wa].astype(str).apply(assign_bloc)
     latest["Run Bloc Clean"] = latest[ra].astype(str).apply(assign_bloc)
-    latest["Projected Bloc"] = latest["Win Bloc Clean"]
-    latest["Swing Impact %"] = 0.0
-    latest["Projected Flip"] = False
-    latest["Confidence"] = "Safe Hold"
-    latest["Scenario"] = f"UDF +{swing_pct:.0f}%"
+    latest["Margin %"] = (to_num(latest[mg]) / to_num(latest[tv]) * 100).replace([np.inf, -np.inf], np.nan)
 
-    udf_challenge = latest["Win Bloc Clean"].ne("UDF") & latest["Run Bloc Clean"].eq("UDF") & latest["Margin %"].notna()
-    udf_defense = latest["Win Bloc Clean"].eq("UDF") & latest["Run Bloc Clean"].ne("UDF") & latest["Margin %"].notna()
+    projections = []
+    for _, row in latest.iterrows():
+        votes = bloc_vote_profile(row)
+        target_vote = float(votes.get(target_bloc, 0.0) or 0.0)
+        winner_bloc = row["Win Bloc Clean"]
+        current_winner = str(row[wc]) if wc in latest.columns else winner_bloc
+        runner_party = str(row[rc]) if rc in latest.columns else str(row["Run Bloc Clean"])
 
-    latest.loc[udf_challenge, "Swing Impact %"] = swing_pct * 2 - latest.loc[udf_challenge, "Margin %"]
-    latest.loc[udf_defense, "Swing Impact %"] = latest.loc[udf_defense, "Margin %"] + swing_pct * 2
-    latest.loc[udf_challenge & (latest["Swing Impact %"] >= 0), "Projected Bloc"] = "UDF"
-    latest.loc[udf_challenge & (latest["Swing Impact %"] >= 0), "Projected Flip"] = True
+        other_candidates = {k: v for k, v in votes.items() if k != target_bloc}
+        lead_other_bloc = max(other_candidates, key=lambda k: other_candidates[k])
+        lead_other_vote = other_candidates[lead_other_bloc]
+        current_edge = target_vote - lead_other_vote
 
-    closeness = latest["Margin %"].fillna(999)
-    latest.loc[closeness <= swing_pct, "Confidence"] = "High Swing Sensitivity"
-    latest.loc[(closeness > swing_pct) & (closeness <= swing_pct * 2), "Confidence"] = "Competitive"
-    latest.loc[(latest["Projected Flip"]) & (closeness <= swing_pct * 0.75), "Confidence"] = "Likely Flip"
+        split_factor = 0.0
+        split_leakage = 0.0
+        if use_split_factor and winner_bloc != target_bloc:
+            incumbent_vote = float(votes.get(winner_bloc, 0.0) or 0.0)
+            total_opposition = max(0.0, 100 - incumbent_vote)
+            if total_opposition > 0:
+                iou = (target_vote / total_opposition) * 100
+                split_factor = max(0.0, 100 - iou)
+                split_leakage = max(0.0, total_opposition - target_vote)
 
-    latest["Top Bloc"] = latest["Projected Bloc"]
-    latest["Constituency"] = latest["Constituency Clean"]
-    latest["Current Winner"] = latest[wc].astype(str) if wc in latest.columns else latest["Win Bloc Clean"]
-    latest["Runner Party"] = latest[rc].astype(str) if rc in latest.columns else latest["Run Bloc Clean"]
-    latest["Top Party"] = latest["Current Winner"]
-    latest.loc[latest["Projected Flip"] & latest["Runner Party"].notna(), "Top Party"] = latest.loc[latest["Projected Flip"] & latest["Runner Party"].notna(), "Runner Party"]
-    latest["Map Constituency"] = latest["Map Constituency"].fillna(latest["Constituency"])
-    cols = ["Constituency", "Map Constituency", "Top Bloc", "Top Party", "Current Winner", "Runner Party", "Win Bloc Clean", "Run Bloc Clean", "Margin %", "Projected Flip", "Confidence", "Scenario"]
-    return latest[cols].copy(), latest_year
+        if winner_bloc == target_bloc:
+            projected_edge = current_edge + 2 * swing_pct + split_leakage
+            projected_bloc = target_bloc
+            projected_flip = False
+        else:
+            projected_edge = current_edge + 2 * swing_pct - split_leakage
+            projected_flip = projected_edge >= 0
+            projected_bloc = target_bloc if projected_flip else winner_bloc
+
+        projected_party = runner_party if projected_flip and runner_party else current_winner
+        confidence = "Toss-up"
+        abs_margin = abs(projected_edge)
+        if abs_margin > 10:
+            confidence = "Safe"
+        elif abs_margin > 5:
+            confidence = "Likely"
+        elif abs_margin > 2:
+            confidence = "Lean"
+
+        projections.append({
+            "Constituency": row["Constituency Clean"],
+            "Map Constituency": row["Map Constituency"] if pd.notna(row["Map Constituency"]) else row["Constituency Clean"],
+            "Top Bloc": projected_bloc,
+            "Top Party": projected_party,
+            "Current Winner": current_winner,
+            "Runner Party": runner_party,
+            "Win Bloc Clean": winner_bloc,
+            "Run Bloc Clean": row["Run Bloc Clean"],
+            "Margin %": row["Margin %"],
+            "Projected Margin %": projected_edge,
+            "Target Vote %": target_vote,
+            "Split Factor": split_factor,
+            "Split Leakage %": split_leakage,
+            "Projected Flip": projected_flip,
+            "Confidence": confidence,
+            "Scenario": f"{target_bloc} +{swing_pct:g}%{' with split factor' if use_split_factor else ''}",
+        })
+
+    return pd.DataFrame(projections), latest_year
+
+def summarize_forecast_with_ai(user_prompt, target_bloc, swings, use_split_factor, projections):
+    if not api_key:
+        return None
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-2.5-flash-lite")
+        snippets = []
+        for swing, proj_df in projections:
+            seat_count = proj_df["Top Bloc"].value_counts().to_dict()
+            flips = proj_df[proj_df["Projected Flip"]]["Constituency"].head(8).tolist()
+            snippets.append({
+                "scenario": f"{target_bloc}+{swing:g}%",
+                "seats": seat_count,
+                "flips": flips,
+            })
+        prompt = (
+            "You are explaining a Kerala assembly swing simulation.\n"
+            "Write 2-4 concise prose sentences. Mention that it is a scenario simulation, not a prediction.\n"
+            f"User request: {user_prompt}\n"
+            f"Target bloc: {target_bloc}; swings: {swings}; split factor: {use_split_factor}\n"
+            f"Results: {snippets}"
+        )
+        return model.generate_content(prompt).text.strip()
+    except Exception:
+        return None
 
 def render_kerala_constituency_map(map_df, geojson):
     color_map = {
@@ -545,15 +701,22 @@ def render_kerala_constituency_map(map_df, geojson):
           const votes = row && row["Votes Polled"] != null ? Math.round(Number(row["Votes Polled"])).toLocaleString() : "NA";
           const margin = row && row["Avg Margin"] != null ? Math.round(Number(row["Avg Margin"])).toLocaleString() : "NA";
           const marginPct = row && row["Margin %"] != null ? Number(row["Margin %"]).toFixed(2) + "%" : "NA";
+          const projectedMargin = row && row["Projected Margin %"] != null ? Number(row["Projected Margin %"]).toFixed(2) + "%" : "NA";
+          const splitFactor = row && row["Split Factor"] != null ? Number(row["Split Factor"]).toFixed(2) : "NA";
+          const splitLeakage = row && row["Split Leakage %"] != null ? Number(row["Split Leakage %"]).toFixed(2) + "%" : "NA";
           const html = row ? `
             <div style="font-weight:700;color:#c9a84c;margin-bottom:6px;">${{row["Constituency"]}}</div>
             <div>Seats: ${{row["Seats"]}}</div>
             <div>Top Party: ${{row["Top Party"]}}</div>
             <div>Top Bloc: ${{row["Top Bloc"]}}</div>
             ${{row["Scenario"] ? `<div>Scenario: ${{row["Scenario"]}}</div>` : ""}}
+            ${{row["Current Winner"] ? `<div>Current Winner: ${{row["Current Winner"]}}</div>` : ""}}
             ${{row["Runner Party"] ? `<div>Runner-Up: ${{row["Runner Party"]}}</div>` : ""}}
             <div>Votes Polled: ${{votes}}</div>
             ${{row["Margin %"] != null ? `<div>Margin %: ${{marginPct}}</div>` : ""}}
+            ${{row["Projected Margin %"] != null ? `<div>Projected Edge: ${{projectedMargin}}</div>` : ""}}
+            ${{row["Split Factor"] != null ? `<div>Split Factor: ${{splitFactor}}</div>` : ""}}
+            ${{row["Split Leakage %"] != null ? `<div>Split Leakage: ${{splitLeakage}}</div>` : ""}}
             <div>Turnout: ${{turnout}}</div>
             <div>Avg Margin: ${{margin}}</div>
             ${{row["Confidence"] ? `<div>Forecast: ${{row["Confidence"]}}</div>` : ""}}
@@ -1414,51 +1577,135 @@ def page_maps(df):
             st.caption("These are the constituency names that needed fuzzy correction or still remain unmatched.")
             st.dataframe(fuzzy_df.sort_values(["Match Type", "Dataset Name"]), width='stretch', hide_index=True)
 
-    st.markdown('<div class="section-title">UDF Uniform Swing Forecast</div>', unsafe_allow_html=True)
-    st.caption("Projection assumption: a uniform UDF-favouring swing reduces the latest election margin by roughly twice the swing where UDF was runner-up. This is a scenario simulator, not a polling model.")
+    for key, val in [
+        ("maps_forecast_prompt", ""),
+        ("maps_forecast_payload", None),
+        ("maps_forecast_summary", None),
+    ]:
+        if key not in st.session_state:
+            st.session_state[key] = val
 
-    swing_tabs = st.tabs(["UDF +2%", "UDF +3%", "UDF +4%"])
-    for swing_tab, swing in zip(swing_tabs, [2.0, 3.0, 4.0]):
-        with swing_tab:
-            projection = build_udf_swing_projection(df, swing)
-            if projection is None:
-                st.info("Need `Constituency Name`, `Win Alliance`, `Run Alliance`, `Margin`, and `Votes Polled` to build the swing forecast.")
-                continue
-            proj_df, base_year = projection
-            geo_names = {
-                normalize_constituency_name((f.get("properties") or {}).get("AC_NAME", ""))
-                for f in geojson.get("features", [])
-            }
-            proj_df = proj_df[proj_df["Map Constituency"].apply(normalize_constituency_name).isin(geo_names)].copy()
-            flips = proj_df[proj_df["Projected Flip"]].copy().sort_values("Margin %")
-            seat_count = proj_df["Top Bloc"].value_counts()
+    st.markdown('<div class="section-title">AI Forecast Assistant</div>', unsafe_allow_html=True)
+    st.caption("Ask for a swing scenario in plain English. The assistant will parse the request, apply a bloc-specific swing model, optionally include split factor, and render a forecast map only when requested.")
+    forecast_prompt = st.text_area(
+        "Forecast Request",
+        value=st.session_state.maps_forecast_prompt,
+        placeholder="Example: Plot a uniform 2%, 3%, and 4% swing in favour of UDF and include split factor on the map.",
+        height=100,
+        key="maps_forecast_input",
+    )
+    fc1, fc2 = st.columns([1, 5])
+    with fc1:
+        run_forecast = st.button("Generate Forecast", key="maps_forecast_run", disabled=not forecast_prompt.strip())
+    with fc2:
+        if st.button("Clear Forecast", key="maps_forecast_clear"):
+            st.session_state.maps_forecast_prompt = ""
+            st.session_state.maps_forecast_payload = None
+            st.session_state.maps_forecast_summary = None
+            st.rerun()
 
-            c_map, c_meta = st.columns([1.2, 0.8])
-            with c_map:
-                render_kerala_constituency_map(proj_df, geojson)
-            with c_meta:
-                st.markdown(
-                    f'<div class="metric-row">'
-                    f'{mc("Base Year", fmt_year(base_year), "Latest election used")}'
-                    f'{mc("Projected UDF Flips", int(flips.shape[0]), f"Under {swing:.0f}% swing")}'
-                    f'{mc("Projected UDF Seats", int(seat_count.get("UDF", 0)), "Scenario total")}'
-                    f'{mc("Projected LDF Seats", int(seat_count.get("LDF", 0)), "Scenario total")}'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-                if flips.empty:
-                    st.info(f"No LDF/NDA-held seats cross the projected threshold under a {swing:.0f}% UDF swing.")
-                else:
-                    st.markdown("**Most Sensitive Seats**")
-                    preview = flips[["Constituency", "Current Winner", "Runner Party", "Margin %", "Confidence"]].copy().head(15)
-                    preview["Margin %"] = preview["Margin %"].round(2)
-                    st.dataframe(preview, width='stretch', hide_index=True)
+    if run_forecast:
+        params = parse_prediction_prompt(forecast_prompt)
+        st.session_state.maps_forecast_prompt = forecast_prompt
+        scenarios = []
+        for swing in params["swings"]:
+            projection = project_uniform_swing(
+                df,
+                params["target_bloc"],
+                float(swing),
+                use_split_factor=params["use_split_factor"],
+            )
+            if projection is not None:
+                proj_df, base_year = projection
+                geo_names = {
+                    normalize_constituency_name((f.get("properties") or {}).get("AC_NAME", ""))
+                    for f in geojson.get("features", [])
+                }
+                proj_df = proj_df[proj_df["Map Constituency"].apply(normalize_constituency_name).isin(geo_names)].copy()
+                scenarios.append({"swing": float(swing), "df": proj_df, "base_year": base_year})
+        st.session_state.maps_forecast_payload = {
+            "target_bloc": params["target_bloc"],
+            "swings": params["swings"],
+            "use_split_factor": params["use_split_factor"],
+            "note": params.get("note", ""),
+            "scenarios": scenarios,
+        }
+        if scenarios:
+            st.session_state.maps_forecast_summary = summarize_forecast_with_ai(
+                forecast_prompt,
+                params["target_bloc"],
+                params["swings"],
+                params["use_split_factor"],
+                [(s["swing"], s["df"]) for s in scenarios],
+            )
+        else:
+            st.session_state.maps_forecast_summary = None
+        st.rerun()
 
-            if not flips.empty:
-                st.markdown(f"**Projected Flip List: UDF +{swing:.0f}%**")
-                out = flips[["Constituency", "Current Winner", "Top Party", "Margin %", "Confidence"]].copy()
-                out["Margin %"] = out["Margin %"].round(2)
-                st.dataframe(out, width='stretch', hide_index=True)
+    forecast_payload = st.session_state.maps_forecast_payload
+    if forecast_payload:
+        target_bloc = forecast_payload["target_bloc"]
+        use_split_factor = forecast_payload["use_split_factor"]
+        scenarios = forecast_payload["scenarios"]
+        if forecast_payload.get("note"):
+            st.info(forecast_payload["note"])
+        if st.session_state.maps_forecast_summary:
+            st.markdown(
+                f"<div style='padding:0.9rem 1rem;background:{CARD_BG};border:1px solid #2a4060;border-radius:10px;color:{TEXT_MAIN};'>{html.escape(st.session_state.maps_forecast_summary)}</div>",
+                unsafe_allow_html=True,
+            )
+        if not scenarios:
+            st.warning("The forecast request could not be applied with the currently available columns.")
+        else:
+            scenario_tabs = st.tabs([f"{target_bloc} +{s['swing']:g}%" for s in scenarios])
+            for tab, scenario in zip(scenario_tabs, scenarios):
+                with tab:
+                    proj_df = scenario["df"]
+                    base_year = scenario["base_year"]
+                    flips = proj_df[proj_df["Projected Flip"]].copy().sort_values("Margin %")
+                    seat_count = proj_df["Top Bloc"].value_counts()
+                    c_map, c_meta = st.columns([1.2, 0.8])
+                    with c_map:
+                        render_kerala_constituency_map(proj_df, geojson)
+                    with c_meta:
+                        st.markdown(
+                            f'<div class="metric-row">'
+                            f'{mc("Base Year", fmt_year(base_year), "Latest election used")}'
+                            f'{mc(f"Projected {target_bloc} Seats", int(seat_count.get(target_bloc, 0)), "Scenario total")}'
+                            f'{mc("Projected Flips", int(flips.shape[0]), f"{target_bloc} gains")}'
+                            f'{mc("Split Factor", "On" if use_split_factor else "Off", "Scenario logic")}'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
+                        st.markdown("**Closest Battlegrounds**")
+                        battlegrounds = proj_df.copy().sort_values("Projected Margin %", key=lambda s: s.abs()).head(15)
+                        show_cols = ["Constituency", "Current Winner", "Top Bloc", "Projected Margin %", "Confidence"]
+                        if use_split_factor:
+                            show_cols += ["Split Factor", "Split Leakage %"]
+                        for col in ["Projected Margin %", "Split Factor", "Split Leakage %"]:
+                            if col in battlegrounds.columns:
+                                battlegrounds[col] = battlegrounds[col].round(2)
+                        st.dataframe(battlegrounds[show_cols], width='stretch', hide_index=True)
+
+                    if use_split_factor:
+                        st.markdown("**Split Factor View**")
+                        split_df = proj_df.sort_values("Split Leakage %", ascending=False).head(12).copy()
+                        if not split_df.empty:
+                            fig_sf, ax_sf = plt.subplots(figsize=(10, 4))
+                            ax_sf.barh(split_df["Constituency"][::-1], split_df["Split Leakage %"][::-1], color="#f0a500")
+                            ax_sf.set_xlabel("Split Leakage %")
+                            ax_sf.set_title(f"Top Split-Factor Seats — {target_bloc} +{scenario['swing']:g}%")
+                            plt.tight_layout()
+                            st.pyplot(fig_sf)
+                            plt.close()
+
+                    if not flips.empty:
+                        st.markdown(f"**Projected Flip List: {target_bloc} +{scenario['swing']:g}%**")
+                        out = flips[["Constituency", "Current Winner", "Top Bloc", "Projected Margin %", "Confidence"]].copy()
+                        if use_split_factor:
+                            out["Split Factor"] = flips["Split Factor"].round(2)
+                        out["Projected Margin %"] = out["Projected Margin %"].round(2)
+                        st.dataframe(out, width='stretch', hide_index=True)
 
 
 def page_reserved(df):
