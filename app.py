@@ -9,6 +9,7 @@ import seaborn as sns
 import difflib
 import re
 import html
+import json
 import numpy as np
 import streamlit.components.v1 as components
 
@@ -152,68 +153,25 @@ A1 = "#e05c4b"; A2 = "#4b9ce8"; A3 = "#6bcb77"
 BLOC_COLORS = {"LDF": A1, "UDF": A2, "NDA": "#f0a500", "Other": "#888"}
 PAL = [GOLD, A1, A2, A3, "#b07aff", "#ff9f7a", "#7af0d8", "#ffde7a", "#c080ff", "#80d4c0"]
 
-DISTRICT_NAME_ALIASES = {
-    "trivandrum": "Thiruvananthapuram",
+CONSTITUENCY_NAME_ALIASES = {
+    "vatakara": "Vadakara",
+    "vatakara": "Vadakara",
+    "manjeswar": "Manjeshwar",
+    "manjeshwaram": "Manjeshwar",
+    "kazhakoottam": "Kazhakkoottam",
     "thiruvananthapuram": "Thiruvananthapuram",
-    "thiruvananthpuram": "Thiruvananthapuram",
-    "kasaragod": "Kasaragod",
-    "kasargod": "Kasaragod",
-    "kannur": "Kannur",
-    "cannanore": "Kannur",
-    "wayanad": "Wayanad",
-    "waynad": "Wayanad",
-    "kozhikode": "Kozhikode",
-    "calicut": "Kozhikode",
-    "malappuram": "Malappuram",
-    "palakkad": "Palakkad",
-    "palghat": "Palakkad",
-    "thrissur": "Thrissur",
-    "trichur": "Thrissur",
-    "ernakulam": "Ernakulam",
-    "idukki": "Idukki",
-    "kottayam": "Kottayam",
-    "alappuzha": "Alappuzha",
-    "alleppey": "Alappuzha",
-    "pathanamthitta": "Pathanamthitta",
-    "kollam": "Kollam",
-    "quilion": "Kollam",
+    "trivandrum": "Thiruvananthapuram",
+    "nemom": "Nemom",
+    "attingal": "Attingal",
+    "punalur": "Punalur",
+    "aranmula": "Aranmula",
+    "chengannur": "Chengannur",
+    "thripunithura": "Thrippunithura",
+    "udumbanchola": "Udumbanchola",
+    "perumbavoor": "Perumbavoor",
+    "malampuzha": "Malampuzha",
+    "cherthala": "Cherthala",
 }
-
-KERALA_DISTRICT_POLYGONS = {
-    "Kasaragod": "168,18 248,42 244,102 172,116 126,90 134,38",
-    "Kannur": "158,112 258,120 248,198 178,236 120,198 132,124",
-    "Wayanad": "260,132 346,148 336,244 258,282 226,214",
-    "Kozhikode": "138,214 230,218 244,294 194,334 132,314 110,252",
-    "Malappuram": "128,316 216,334 224,416 160,480 104,438 98,360",
-    "Palakkad": "230,326 344,316 362,448 258,534 206,458",
-    "Thrissur": "122,482 236,434 258,546 196,614 126,598 90,542",
-    "Ernakulam": "122,602 196,616 190,690 130,726 92,684 86,632",
-    "Idukki": "202,548 346,462 350,630 250,722 190,690",
-    "Kottayam": "154,720 250,724 236,790 176,826 134,792",
-    "Alappuzha": "104,728 150,724 160,836 108,874 78,820 78,758",
-    "Pathanamthitta": "174,792 244,794 256,876 196,926 140,888 148,834",
-    "Kollam": "98,874 188,926 170,1022 94,1028 66,942",
-    "Thiruvananthapuram": "94,1028 166,1020 182,1128 110,1164 62,1098",
-}
-
-KERALA_DISTRICT_LABELS = {
-    "Kasaragod": (186, 68),
-    "Kannur": (184, 170),
-    "Wayanad": (286, 208),
-    "Kozhikode": (176, 274),
-    "Malappuram": (162, 394),
-    "Palakkad": (287, 421),
-    "Thrissur": (163, 534),
-    "Ernakulam": (143, 664),
-    "Idukki": (268, 601),
-    "Kottayam": (190, 772),
-    "Alappuzha": (108, 798),
-    "Pathanamthitta": (198, 862),
-    "Kollam": (120, 974),
-    "Thiruvananthapuram": (122, 1094),
-}
-
-KERALA_DISTRICT_ORDER = list(KERALA_DISTRICT_POLYGONS.keys())
 
 def set_plot_style():
     plt.rcParams.update({
@@ -308,11 +266,16 @@ def margin_cat(margin, tv):
 def norm_text(v):
     return re.sub(r'[^a-z0-9]+', '', str(v).strip().lower())
 
-def normalize_district_name(v):
-    key = norm_text(v)
+def normalize_constituency_name(v):
+    text = str(v).strip()
+    if not text:
+        return None
+    text = re.sub(r'\((sc|st)\)', '', text, flags=re.I)
+    text = re.sub(r'\s+', ' ', text).strip()
+    key = norm_text(text)
     if not key:
         return None
-    return DISTRICT_NAME_ALIASES.get(key, str(v).strip().title())
+    return CONSTITUENCY_NAME_ALIASES.get(key, text.title())
 
 def pick_metric_col(df, candidates):
     for name in candidates:
@@ -321,21 +284,29 @@ def pick_metric_col(df, candidates):
             return col
     return None
 
-def build_district_summary(df, year):
-    dc = smart_col(df, "District")
-    if dc not in df.columns:
+@st.cache_data
+def load_constituency_geojson():
+    with open("KLA_AC_2026.geojson", "r", encoding="utf-8") as f:
+        geo = json.load(f)
+    for feature in geo.get("features", []):
+        props = feature.setdefault("properties", {})
+        props["__norm_name"] = normalize_constituency_name(props.get("AC_NAME", ""))
+    return geo
+
+def build_constituency_summary(df, year):
+    cc = smart_col(df, "Constituency Name")
+    if cc not in df.columns:
         return None
 
     year_df = df[df["Year"] == year].copy()
     if year_df.empty:
         return None
 
-    year_df["District Clean"] = year_df[dc].apply(normalize_district_name)
-    year_df = year_df[year_df["District Clean"].isin(KERALA_DISTRICT_ORDER)].copy()
+    year_df["Constituency Clean"] = year_df[cc].apply(normalize_constituency_name)
     if year_df.empty:
         return None
 
-    seats = year_df.groupby("District Clean").size()
+    seats = year_df.groupby("Constituency Clean").size()
     vp = pick_metric_col(year_df, ["Votes Polled", "Votes polled"])
     el = pick_metric_col(year_df, ["Electors", "Elecors"])
     wc = pick_metric_col(year_df, ["Win Party"])
@@ -343,15 +314,14 @@ def build_district_summary(df, year):
     mg = pick_metric_col(year_df, ["Margin", "Margin Win Vote-Run Vote"])
 
     rows = []
-    for district in KERALA_DISTRICT_ORDER:
-        ddf = year_df[year_df["District Clean"] == district].copy()
-        if ddf.empty:
+    for constituency, ddf in year_df.groupby("Constituency Clean"):
+        if not constituency or ddf.empty:
             continue
 
-        seats_count = int(seats.get(district, len(ddf)))
+        seats_count = int(seats.get(constituency, len(ddf)))
         votes_polled = to_num(ddf[vp]).sum() if vp else np.nan
         electors = to_num(ddf[el]).sum() if el else np.nan
-        turnout = (votes_polled / electors * 100) if el and electors and electors > 0 else np.nan
+        turnout = (votes_polled / electors * 100) if el and pd.notna(electors) and electors > 0 else np.nan
         avg_margin = to_num(ddf[mg]).mean() if mg else np.nan
 
         if wa:
@@ -364,7 +334,7 @@ def build_district_summary(df, year):
         lead_party = winner_counts.index[0] if not winner_counts.empty else "NA"
 
         rows.append({
-            "District": district,
+            "Constituency": constituency,
             "Seats": seats_count,
             "Votes Polled": votes_polled,
             "Turnout %": turnout,
@@ -378,81 +348,90 @@ def build_district_summary(df, year):
 
     return pd.DataFrame(rows)
 
-def render_kerala_district_map(map_df):
+def render_kerala_constituency_map(map_df, geojson):
     color_map = {
         "LDF": A1,
         "UDF": A2,
         "NDA": "#f0a500",
         "Other": "#557089",
     }
-
-    map_rows = {r["District"]: r for r in map_df.to_dict("records")}
-    svg_parts = [
-        """
-        <style>
-        .kerala-map-wrap{
-            background:linear-gradient(180deg,#0f1e30 0%,#12253b 100%);
-            border:1px solid #2a4060;
-            border-radius:18px;
-            padding:16px;
-        }
-        .kerala-map{
-            width:100%;
-            height:auto;
-            display:block;
-        }
-        .district-shape{
-            stroke:#d9c79a;
-            stroke-width:4;
-            cursor:pointer;
-            transition:all .18s ease;
-        }
-        .district-shape:hover{
-            filter:brightness(1.15);
-            stroke:#fff4cf;
-            stroke-width:6;
-        }
-        .district-label{
-            font-family:'DM Sans',sans-serif;
-            font-size:18px;
-            font-weight:700;
-            fill:#f3efe6;
-            text-anchor:middle;
-            pointer-events:none;
-        }
-        </style>
-        <div class="kerala-map-wrap">
-        <svg class="kerala-map" viewBox="0 0 430 1180" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Kerala district election map">
-        """
-    ]
-
-    for district in KERALA_DISTRICT_ORDER:
-        row = map_rows.get(district)
-        fill = color_map.get((row or {}).get("Top Bloc", "Other"), "#334b60")
-        if row:
-            turnout = "NA" if pd.isna(row["Turnout %"]) else f'{row["Turnout %"]:.1f}%'
-            votes = "NA" if pd.isna(row["Votes Polled"]) else f'{int(round(row["Votes Polled"])):,}'
-            margin = "NA" if pd.isna(row["Avg Margin"]) else f'{int(round(row["Avg Margin"])):,}'
-            tooltip = (
-                f"{district}\n"
-                f"Seats: {int(row['Seats'])}\n"
-                f"Top Party: {row['Top Party']}\n"
-                f"Top Bloc: {row['Top Bloc']}\n"
-                f"Votes Polled: {votes}\n"
-                f"Turnout: {turnout}\n"
-                f"Avg Margin: {margin}"
-            )
-        else:
-            tooltip = f"{district}\nNo data for current filters"
-        x, y = KERALA_DISTRICT_LABELS[district]
-        svg_parts.append(
-            f'<polygon class="district-shape" points="{KERALA_DISTRICT_POLYGONS[district]}" fill="{fill}">'
-            f"<title>{html.escape(tooltip)}</title></polygon>"
-            f'<text class="district-label" x="{x}" y="{y}">{html.escape(district)}</text>'
-        )
-
-    svg_parts.append("</svg></div>")
-    components.html("".join(svg_parts), height=980, scrolling=False)
+    map_rows = {normalize_constituency_name(r["Constituency"]): r for r in map_df.to_dict("records")}
+    payload = json.dumps(map_rows)
+    geo_payload = json.dumps(geojson)
+    html_block = f"""
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    <style>
+      .map-shell {{
+        background:linear-gradient(180deg,#0f1e30 0%,#12253b 100%);
+        border:1px solid #2a4060;
+        border-radius:18px;
+        padding:14px;
+      }}
+      #kerala-map {{
+        width:100%;
+        height:780px;
+        border-radius:14px;
+        overflow:hidden;
+      }}
+      .leaflet-container {{
+        background:#102235;
+        font-family:'DM Sans',sans-serif;
+      }}
+      .leaflet-tooltip {{
+        background:#0f1e30;
+        color:#e8e4da;
+        border:1px solid #2a4060;
+        border-radius:8px;
+        box-shadow:none;
+        padding:10px 12px;
+      }}
+    </style>
+    <div class="map-shell"><div id="kerala-map"></div></div>
+    <script>
+      const rows = {payload};
+      const geo = {geo_payload};
+      const colorMap = {json.dumps(color_map)};
+      const fallbackColor = "#334b60";
+      const map = L.map("kerala-map", {{ zoomControl: true, attributionControl: false }});
+      const layer = L.geoJSON(geo, {{
+        style: feature => {{
+          const key = feature.properties.__norm_name;
+          const row = rows[key];
+          return {{
+            color: "#d9c79a",
+            weight: 0.7,
+            fillOpacity: row ? 0.78 : 0.22,
+            fillColor: colorMap[(row && row["Top Bloc"]) || "Other"] || fallbackColor
+          }};
+        }},
+        onEachFeature: (feature, lyr) => {{
+          const props = feature.properties || {{}};
+          const row = rows[props.__norm_name];
+          const turnout = row && row["Turnout %"] != null ? Number(row["Turnout %"]).toFixed(1) + "%" : "NA";
+          const votes = row && row["Votes Polled"] != null ? Math.round(Number(row["Votes Polled"])).toLocaleString() : "NA";
+          const margin = row && row["Avg Margin"] != null ? Math.round(Number(row["Avg Margin"])).toLocaleString() : "NA";
+          const html = row ? `
+            <div style="font-weight:700;color:#c9a84c;margin-bottom:6px;">${{row["Constituency"]}}</div>
+            <div>Seats: ${{row["Seats"]}}</div>
+            <div>Top Party: ${{row["Top Party"]}}</div>
+            <div>Top Bloc: ${{row["Top Bloc"]}}</div>
+            <div>Votes Polled: ${{votes}}</div>
+            <div>Turnout: ${{turnout}}</div>
+            <div>Avg Margin: ${{margin}}</div>
+          ` : `
+            <div style="font-weight:700;color:#c9a84c;margin-bottom:6px;">${{props.AC_NAME || "Unknown"}}</div>
+            <div>No matching election data for current filters</div>
+          `;
+          lyr.bindTooltip(html, {{ sticky: true, direction: "auto" }});
+          lyr.on("mouseover", function() {{ this.setStyle({{ weight: 1.6, fillOpacity: 0.95, color: "#fff4cf" }}); }});
+          lyr.on("mouseout", function() {{ layer.resetStyle(this); }});
+        }}
+      }}).addTo(map);
+      map.fitBounds(layer.getBounds(), {{ padding: [8, 8] }});
+    </script>
+    """
+    components.html(html_block, height=820, scrolling=False)
 
 # ─────────────────────────────────────────────
 # 5. STATISTICS
@@ -1197,9 +1176,9 @@ def page_regional(df):
         plt.tight_layout(); st.pyplot(fig); plt.close()
 
 def page_maps(df):
-    dc = smart_col(df, "District")
-    if dc not in df.columns:
-        st.info("No 'District' column found, so the Kerala district map cannot be drawn.")
+    cc = smart_col(df, "Constituency Name")
+    if cc not in df.columns:
+        st.info("No 'Constituency Name' column found, so the Kerala constituency map cannot be drawn.")
         return
 
     valid_years = sorted(df["Year"].dropna().unique())
@@ -1207,8 +1186,8 @@ def page_maps(df):
         st.info("No election years available for the map.")
         return
 
-    st.markdown('<div class="section-title">🗺️ Kerala District Map</div>', unsafe_allow_html=True)
-    st.caption("Hover over any district to view its election summary for the selected year.")
+    st.markdown('<div class="section-title">🗺️ Kerala Constituency Map</div>', unsafe_allow_html=True)
+    st.caption("GIS constituency boundaries from Open Data Kerala. Hover over any constituency to view its election summary for the selected year.")
 
     c1, c2 = st.columns([1.15, 0.85])
     with c2:
@@ -1219,29 +1198,40 @@ def page_maps(df):
             key="maps_year",
         )
 
-    map_df = build_district_summary(df, selected_year)
+    map_df = build_constituency_summary(df, selected_year)
     if map_df is None or map_df.empty:
-        st.info("District-level data for the current filters could not be matched to the Kerala map.")
+        st.info("Constituency-level data for the current filters could not be matched to the Kerala map.")
+        return
+    try:
+        geojson = load_constituency_geojson()
+    except FileNotFoundError:
+        st.error("The constituency GeoJSON file is missing from the project workspace.")
         return
 
     with c1:
-        render_kerala_district_map(map_df)
+        render_kerala_constituency_map(map_df, geojson)
 
     with c2:
         top_bloc = map_df["Top Bloc"].value_counts()
         seats_total = int(map_df["Seats"].sum())
         turnout_avg = map_df["Turnout %"].dropna().mean()
         leader = map_df["Top Party"].value_counts()
+        geo_names = {
+            normalize_constituency_name((f.get("properties") or {}).get("AC_NAME", ""))
+            for f in geojson.get("features", [])
+        }
+        matched = map_df["Constituency"].apply(normalize_constituency_name).isin(geo_names).sum()
 
         st.markdown(
             f'<div class="metric-row">'
             f'{mc("Year", fmt_year(selected_year), "Map snapshot")}'
-            f'{mc("Districts", int(map_df["District"].nunique()), "Matched on map")}'
+            f'{mc("Constituencies", int(map_df["Constituency"].nunique()), "In filtered data")}'
             f'{mc("Seats", seats_total, "Across Kerala")}'
-            f'{mc("Avg Turnout", "NA" if pd.isna(turnout_avg) else f"{turnout_avg:.1f}%", "District mean")}'
+            f'{mc("Avg Turnout", "NA" if pd.isna(turnout_avg) else f"{turnout_avg:.1f}%", "Constituency mean")}'
             f'</div>',
             unsafe_allow_html=True
         )
+        st.caption(f"{matched} constituencies matched against the GIS boundary file.")
 
         st.markdown("**Bloc Legend**")
         legend_rows = [
@@ -1255,7 +1245,7 @@ def page_maps(df):
             st.markdown(
                 f"<div style='display:flex;align-items:center;gap:0.6rem;margin:0.35rem 0;'>"
                 f"<span style='width:14px;height:14px;border-radius:4px;background:{color};display:inline-block;border:1px solid #d9c79a;'></span>"
-                f"<span>{label}</span><span style='color:{MUTED};margin-left:auto;'>{count} districts</span>"
+                f"<span>{label}</span><span style='color:{MUTED};margin-left:auto;'>{count} constituencies</span>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
@@ -1265,13 +1255,13 @@ def page_maps(df):
             st.markdown(
                 f"<div style='padding:0.8rem 1rem;background:{CARD_BG};border:1px solid #2a4060;border-radius:10px;'>"
                 f"<div style='font-size:1.4rem;font-weight:700;color:{TEXT_MAIN};'>{html.escape(str(leader.index[0]))}</div>"
-                f"<div style='font-size:0.8rem;color:{MUTED};'>Leads in {int(leader.iloc[0])} mapped districts</div>"
+                f"<div style='font-size:0.8rem;color:{MUTED};'>Leads in {int(leader.iloc[0])} constituencies</div>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
 
-    st.markdown('<div class="section-title">District Summary Table</div>', unsafe_allow_html=True)
-    show_df = map_df.copy().sort_values(["Top Bloc", "District"])
+    st.markdown('<div class="section-title">Constituency Summary Table</div>', unsafe_allow_html=True)
+    show_df = map_df.copy().sort_values(["Top Bloc", "Constituency"])
     for col in ["Votes Polled", "Turnout %", "Avg Margin"]:
         show_df[col] = show_df[col].round(1)
     st.dataframe(show_df, width='stretch', hide_index=True)
