@@ -767,10 +767,11 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
         <div class="tool-group">
 <button type="button" id="{map_id}_fullscreen">Fullscreen</button>
           <select id="{res_id}">
-            <option value="1200x1600">Standard 1200x1600</option>
-            <option value="1800x2400" selected>High 1800x2400</option>
-            <option value="2400x3200">Ultra 2400x3200</option>
-            <option value="3200x4200">Poster 3200x4200</option>
+            <option value="1800x2400">High 1800x2400</option>
+            <option value="2400x3200" selected>Ultra 2400x3200</option>
+            <option value="3600x4800">Print 3600x4800</option>
+            <option value="4800x6400">Poster 4800x6400</option>
+            <option value="6000x8000">Archive 6000x8000</option>
           </select>
           <select id="{crop_id}">
             <option value="full" selected>Whole map</option>
@@ -1077,6 +1078,260 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
         if (!document.fullscreenElement) shellEl.requestFullscreen?.();
         else document.exitFullscreen?.();
       }});
+      document.getElementById("{map_id}_save_svg").addEventListener("click", exportSvgFile);
+      document.getElementById("{map_id}_save_png").addEventListener("click", exportPngFile);
+    </script>
+    """
+    components.html(html_block, height=870, scrolling=False)
+
+def render_kerala_constituency_map(map_df, geojson, map_key=None):
+    color_map = {"LDF": A1, "UDF": A2, "NDA": "#f0a500", "Other": "#557089"}
+    map_rows = {
+        normalize_constituency_name(r.get("Map Constituency") or r.get("Constituency")): r
+        for r in map_df.to_dict("records")
+        if normalize_constituency_name(r.get("Map Constituency") or r.get("Constituency"))
+    }
+    payload = json.dumps(map_rows)
+    geo_payload = json.dumps(geojson)
+    legend_payload = json.dumps(color_map)
+    map_id = f"kerala_map_{re.sub(r'[^a-zA-Z0-9_]+', '_', map_key or uuid.uuid4().hex)}"
+    shell_id = f"{map_id}_shell"
+    legend_id = f"{map_id}_legend"
+    status_id = f"{map_id}_status"
+    res_id = f"{map_id}_resolution"
+    crop_id = f"{map_id}_crop"
+    label_mode_id = f"{map_id}_label_mode"
+    labels_id = f"{map_id}_labels"
+    legend_toggle_id = f"{map_id}_legend_toggle"
+    html_block = f"""
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    <style>
+      .map-shell {{ background:linear-gradient(180deg,#0f1e30 0%,#12253b 100%); border:1px solid #2a4060; border-radius:18px; padding:14px; }}
+      .map-toolbar {{ display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:space-between; margin-bottom:10px; padding:10px 12px; border:1px solid #2a4060; border-radius:12px; background:rgba(8,17,30,0.55); }}
+      .map-toolbar .tool-group {{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; }}
+      .map-toolbar button, .map-toolbar select {{ background:#102235; color:#e8e4da; border:1px solid #2a4060; border-radius:8px; padding:7px 10px; font-size:12px; cursor:pointer; }}
+      .map-toolbar label {{ font-size:12px; color:#c8d8e8; display:flex; gap:6px; align-items:center; }}
+      .map-toolbar .status {{ font-size:12px; color:#8fa3c0; }}
+      #{map_id} {{ width:100%; height:780px; border-radius:14px; overflow:hidden; }}
+      .leaflet-container {{ background:#102235; font-family:'DM Sans',sans-serif; }}
+      .export-legend {{ position:absolute; right:26px; bottom:26px; background:rgba(11,17,32,0.92); border:1px solid #2a4060; border-radius:12px; padding:10px 12px; color:#e8e4da; z-index:800; min-width:160px; }}
+      .export-legend h4 {{ margin:0 0 8px 0; font-size:12px; color:#c9a84c; letter-spacing:0.6px; text-transform:uppercase; }}
+      .export-legend .row {{ display:flex; align-items:center; gap:8px; margin:5px 0; font-size:12px; }}
+      .export-legend .swatch {{ width:12px; height:12px; border-radius:3px; border:1px solid #d9c79a; display:inline-block; }}
+      .map-frame {{ position:relative; }}
+      .leaflet-tooltip {{ background:#0f1e30; color:#e8e4da; border:1px solid #2a4060; border-radius:8px; box-shadow:none; padding:10px 12px; }}
+    </style>
+    <div class="map-shell" id="{shell_id}">
+      <div class="map-toolbar">
+        <div class="tool-group">
+          <button type="button" id="{map_id}_fullscreen">Fullscreen</button>
+          <select id="{res_id}">
+            <option value="1800x2400">High 1800x2400</option>
+            <option value="2400x3200" selected>Ultra 2400x3200</option>
+            <option value="3600x4800">Print 3600x4800</option>
+            <option value="4800x6400">Poster 4800x6400</option>
+            <option value="6000x8000">Archive 6000x8000</option>
+          </select>
+          <select id="{crop_id}">
+            <option value="full" selected>Whole map</option>
+            <option value="view">Current view</option>
+          </select>
+          <select id="{label_mode_id}">
+            <option value="name" selected>Labels: names</option>
+            <option value="votes">Labels: votes</option>
+            <option value="margin_votes">Labels: vote diff</option>
+            <option value="projected_margin">Labels: projected edge</option>
+            <option value="none">Labels: none</option>
+          </select>
+          <label><input type="checkbox" id="{labels_id}" checked> Include labels</label>
+          <label><input type="checkbox" id="{legend_toggle_id}" checked> Include legend</label>
+        </div>
+        <div class="tool-group">
+          <button type="button" id="{map_id}_save_png">Save PNG</button>
+          <button type="button" id="{map_id}_save_svg">Save SVG</button>
+          <span class="status" id="{status_id}">Ready</span>
+        </div>
+      </div>
+      <div class="map-frame">
+        <div id="{map_id}"></div>
+        <div class="export-legend" id="{legend_id}"><h4>Legend</h4></div>
+      </div>
+    </div>
+    <script>
+      const rows = {payload};
+      const geo = {geo_payload};
+      const colorMap = {legend_payload};
+      const fallbackColor = "#334b60";
+      const map = L.map("{map_id}", {{ zoomControl: true, attributionControl: false, preferCanvas: false }});
+      const legendEl = document.getElementById("{legend_id}");
+      const statusEl = document.getElementById("{status_id}");
+      const labelsToggle = document.getElementById("{labels_id}");
+      const legendToggle = document.getElementById("{legend_toggle_id}");
+      const resolutionSelect = document.getElementById("{res_id}");
+      const cropSelect = document.getElementById("{crop_id}");
+      const labelModeSelect = document.getElementById("{label_mode_id}");
+      const shellEl = document.getElementById("{shell_id}");
+      const hasProjectedFlips = Object.values(rows).some(r => !!(r && r["Projected Flip"]));
+
+      function shadeColor(hex, amt) {{
+        const c = hex.replace("#", "");
+        const n = parseInt(c, 16);
+        const r = Math.max(0, Math.min(255, (n >> 16) + amt));
+        const g = Math.max(0, Math.min(255, ((n >> 8) & 255) + amt));
+        const b = Math.max(0, Math.min(255, (n & 255) + amt));
+        return "#" + (1 << 24 | r << 16 | g << 8 | b).toString(16).slice(1);
+      }}
+      function legendEntries() {{
+        const entries = Object.entries(colorMap).map(([label, color]) => ({{label, color, stroke:"#d9c79a"}}));
+        if (hasProjectedFlips) ["LDF","UDF","NDA"].forEach(label => entries.push({{label: label + " projected flip", color: shadeColor(colorMap[label], 38), stroke:"#fff4cf"}}));
+        return entries;
+      }}
+      legendEntries().forEach((entry) => {{
+        const row = document.createElement("div");
+        row.className = "row";
+        row.innerHTML = `<span class="swatch" style="background:${{entry.color}};border-color:${{entry.stroke}}"></span><span>${{entry.label}}</span>`;
+        legendEl.appendChild(row);
+      }});
+
+      const featureLayers = [];
+      const layer = L.geoJSON(geo, {{
+        style: feature => {{
+          const row = rows[feature.properties.__norm_name];
+          const baseColor = colorMap[(row && row["Top Bloc"]) || "Other"] || fallbackColor;
+          const isFlip = !!(row && row["Projected Flip"]);
+          return {{ color: isFlip ? "#fff4cf" : "#d9c79a", weight: isFlip ? 1.2 : 0.7, fillOpacity: row ? 0.78 : 0.22, fillColor: isFlip ? shadeColor(baseColor, 38) : baseColor }};
+        }},
+        onEachFeature: (feature, lyr) => {{
+          featureLayers.push([feature, lyr]);
+          const props = feature.properties || {{}};
+          const row = rows[props.__norm_name];
+          const turnout = row && row["Turnout %"] != null ? Number(row["Turnout %"]).toFixed(1) + "%" : "NA";
+          const votes = row && row["Votes Polled"] != null ? Math.round(Number(row["Votes Polled"])).toLocaleString() : "NA";
+          const margin = row && row["Avg Margin"] != null ? Math.round(Number(row["Avg Margin"])).toLocaleString() : "NA";
+          const marginPct = row && row["Margin %"] != null ? Number(row["Margin %"]).toFixed(2) + "%" : "NA";
+          const projectedMargin = row && row["Projected Margin %"] != null ? Number(row["Projected Margin %"]).toFixed(2) + "%" : "NA";
+          const splitFactor = row && row["Split Factor"] != null ? Number(row["Split Factor"]).toFixed(2) : "NA";
+          const splitLeakage = row && row["Split Leakage %"] != null ? Number(row["Split Leakage %"]).toFixed(2) + "%" : "NA";
+          const html = row ? `
+            <div style="font-weight:700;color:#c9a84c;margin-bottom:6px;">${{row["Constituency"]}}</div>
+            <div>Top Party: ${{row["Top Party"]}}</div>
+            <div>Top Bloc: ${{row["Top Bloc"]}}</div>
+            ${{row["Scenario"] ? `<div>Scenario: ${{row["Scenario"]}}</div>` : ""}}
+            ${{row["Current Winner"] ? `<div>Current Winner: ${{row["Current Winner"]}}</div>` : ""}}
+            ${{row["Runner Party"] ? `<div>Runner-Up: ${{row["Runner Party"]}}</div>` : ""}}
+            <div>Votes Polled: ${{votes}}</div>
+            ${{row["Margin %"] != null ? `<div>Margin %: ${{marginPct}}</div>` : ""}}
+            ${{row["Projected Margin %"] != null ? `<div>Projected Edge: ${{projectedMargin}}</div>` : ""}}
+            ${{row["Split Factor"] != null ? `<div>Split Factor: ${{splitFactor}}</div>` : ""}}
+            ${{row["Split Leakage %"] != null ? `<div>Split Leakage: ${{splitLeakage}}</div>` : ""}}
+            <div>Turnout: ${{turnout}}</div>
+            <div>Avg Margin: ${{margin}}</div>
+            ${{row["Confidence"] ? `<div>Forecast: ${{row["Confidence"]}}</div>` : ""}}
+          ` : `<div style="font-weight:700;color:#c9a84c;">${{props.AC_NAME || "Unknown"}}</div><div>No matching election data for current filters</div>`;
+          lyr.bindTooltip(html, {{ sticky: true, direction: "auto" }});
+          lyr.on("mouseover", function() {{ this.setStyle({{ weight: 1.6, fillOpacity: 0.95, color: "#fff4cf" }}); }});
+          lyr.on("mouseout", function() {{ layer.resetStyle(this); }});
+        }}
+      }}).addTo(map);
+      map.fitBounds(layer.getBounds(), {{ padding: [8, 8] }});
+
+      function setStatus(text) {{ statusEl.textContent = text; }}
+      function getBoundsForExport() {{
+        const b = cropSelect.value === "view" ? map.getBounds() : layer.getBounds();
+        return {{ west:b.getWest(), east:b.getEast(), south:b.getSouth(), north:b.getNorth() }};
+      }}
+      function projectPoint(lng, lat, bounds, width, height, padding) {{
+        const usableW = width - padding * 2, usableH = height - padding * 2;
+        return [padding + ((lng - bounds.west) / Math.max(1e-9, bounds.east - bounds.west)) * usableW, padding + (1 - ((lat - bounds.south) / Math.max(1e-9, bounds.north - bounds.south))) * usableH];
+      }}
+      function labelTextForRow(row, props) {{
+        const name = (row && row["Constituency"]) || props.AC_NAME;
+        if (labelModeSelect.value === "none") return "";
+        if (row && labelModeSelect.value === "votes" && row["Votes Polled"] != null) return Math.round(Number(row["Votes Polled"])).toLocaleString();
+        if (row && labelModeSelect.value === "margin_votes" && row["Avg Margin"] != null) return "+/- " + Math.round(Number(row["Avg Margin"])).toLocaleString();
+        if (row && labelModeSelect.value === "projected_margin" && row["Projected Margin %"] != null) return Number(row["Projected Margin %"]).toFixed(1) + "%";
+        return name || "";
+      }}
+      function featurePathString(feature, bounds, width, height, padding) {{
+        const ringsToPath = (rings) => rings.map((ring) => ring.map((pt, idx) => {{
+          const p = projectPoint(pt[0], pt[1], bounds, width, height, padding);
+          return (idx === 0 ? "M" : "L") + p[0].toFixed(2) + " " + p[1].toFixed(2);
+        }}).join(" ") + " Z").join(" ");
+        const geom = feature.geometry || {{}};
+        if (geom.type === "Polygon") return ringsToPath(geom.coordinates || []);
+        if (geom.type === "MultiPolygon") return (geom.coordinates || []).map(poly => ringsToPath(poly)).join(" ");
+        return "";
+      }}
+      function buildLegendNode(targetSvg, width, height) {{
+        if (!legendToggle.checked) return;
+        const entries = legendEntries(), legendWidth = 220, legendHeight = 32 + entries.length * 24, x = width - legendWidth - 24, y = height - legendHeight - 24;
+        const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        rect.setAttribute("x", x); rect.setAttribute("y", y); rect.setAttribute("width", legendWidth); rect.setAttribute("height", legendHeight); rect.setAttribute("rx", 14); rect.setAttribute("fill", "#0b1120"); rect.setAttribute("fill-opacity", "0.94"); rect.setAttribute("stroke", "#2a4060"); g.appendChild(rect);
+        const title = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        title.setAttribute("x", x + 16); title.setAttribute("y", y + 22); title.setAttribute("fill", "#c9a84c"); title.setAttribute("font-size", "13"); title.setAttribute("font-weight", "700"); title.setAttribute("font-family", "DM Sans, sans-serif"); title.textContent = "Legend"; g.appendChild(title);
+        entries.forEach((entry, idx) => {{
+          const yy = y + 44 + idx * 24;
+          const sw = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+          sw.setAttribute("x", x + 16); sw.setAttribute("y", yy - 10); sw.setAttribute("width", 14); sw.setAttribute("height", 14); sw.setAttribute("rx", 3); sw.setAttribute("fill", entry.color); sw.setAttribute("stroke", entry.stroke); g.appendChild(sw);
+          const tx = document.createElementNS("http://www.w3.org/2000/svg", "text");
+          tx.setAttribute("x", x + 40); tx.setAttribute("y", yy + 2); tx.setAttribute("fill", "#e8e4da"); tx.setAttribute("font-size", "12"); tx.setAttribute("font-family", "DM Sans, sans-serif"); tx.textContent = entry.label; g.appendChild(tx);
+        }});
+        targetSvg.appendChild(g);
+      }}
+      function buildExportSvg(width, height) {{
+        const bounds = getBoundsForExport(), padding = cropSelect.value === "view" ? 0 : Math.max(6, Math.round(Math.min(width, height) * 0.004));
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        svg.setAttribute("xmlns", "http://www.w3.org/2000/svg"); svg.setAttribute("width", width); svg.setAttribute("height", height); svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+        const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        bg.setAttribute("x", 0); bg.setAttribute("y", 0); bg.setAttribute("width", width); bg.setAttribute("height", height); bg.setAttribute("fill", "#102235"); svg.appendChild(bg);
+        const labelGroup = document.createElementNS("http://www.w3.org/2000/svg", "g"), placed = [];
+        const minGap = Math.max(18, Math.round(Math.min(width, height) * 0.014)), fontSize = Math.max(9, Math.round(Math.min(width, height) * 0.0065)), strokeSize = Math.max(1.5, Math.round(fontSize * 0.18));
+        (geo.features || []).forEach((feature) => {{
+          const props = feature.properties || {{}}, row = rows[props.__norm_name], baseColor = colorMap[(row && row["Top Bloc"]) || "Other"] || fallbackColor, isFlip = !!(row && row["Projected Flip"]);
+          const d = featurePathString(feature, bounds, width, height, padding);
+          if (!d) return;
+          const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+          path.setAttribute("d", d); path.setAttribute("fill", isFlip ? shadeColor(baseColor, 38) : baseColor); path.setAttribute("fill-opacity", row ? "0.82" : "0.22"); path.setAttribute("stroke", isFlip ? "#fff4cf" : "#d9c79a"); path.setAttribute("stroke-width", isFlip ? "1.4" : "0.9"); svg.appendChild(path);
+          if (!labelsToggle.checked || labelModeSelect.value === "none") return;
+          const fl = featureLayers.find(([f]) => ((f.properties || {{}}).__norm_name === props.__norm_name));
+          if (!fl) return;
+          const c = fl[1].getBounds().getCenter(), pt = projectPoint(c.lng, c.lat, bounds, width, height, padding);
+          if (pt[0] < 0 || pt[0] > width || pt[1] < 0 || pt[1] > height) return;
+          if (placed.some(([x, y]) => Math.hypot(x - pt[0], y - pt[1]) < minGap)) return;
+          const label = labelTextForRow(row, props);
+          if (!label) return;
+          const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+          text.setAttribute("x", pt[0]); text.setAttribute("y", pt[1]); text.setAttribute("fill", "#f3efe6"); text.setAttribute("font-size", String(fontSize)); text.setAttribute("font-weight", "700"); text.setAttribute("text-anchor", "middle"); text.setAttribute("paint-order", "stroke"); text.setAttribute("stroke", "#0b1120"); text.setAttribute("stroke-width", String(strokeSize)); text.setAttribute("font-family", "DM Sans, sans-serif"); text.textContent = label; labelGroup.appendChild(text); placed.push(pt);
+        }});
+        if (labelGroup.childNodes.length) svg.appendChild(labelGroup);
+        buildLegendNode(svg, width, height);
+        return {{ svg, width, height }};
+      }}
+      function triggerDownload(href, filename) {{
+        const a = document.createElement("a"); a.href = href; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+      }}
+      function exportSvgFile() {{
+        const [outW, outH] = resolutionSelect.value.split("x").map(Number), built = buildExportSvg(outW, outH);
+        if (!built) {{ setStatus("Export failed"); return; }}
+        const markup = new XMLSerializer().serializeToString(built.svg), blob = new Blob([markup], {{ type: "image/svg+xml;charset=utf-8" }}), url = URL.createObjectURL(blob);
+        triggerDownload(url, "{map_id}.svg"); setTimeout(() => URL.revokeObjectURL(url), 1000); setStatus("SVG saved");
+      }}
+      function exportPngFile() {{
+        const [outW, outH] = resolutionSelect.value.split("x").map(Number), built = buildExportSvg(outW, outH);
+        if (!built) {{ setStatus("Export failed"); return; }}
+        const markup = new XMLSerializer().serializeToString(built.svg), blob = new Blob([markup], {{ type: "image/svg+xml;charset=utf-8" }}), url = URL.createObjectURL(blob), img = new Image();
+        img.onload = () => {{
+          const canvas = document.createElement("canvas"); canvas.width = outW; canvas.height = outH;
+          const ctx = canvas.getContext("2d"); ctx.fillStyle = "#102235"; ctx.fillRect(0, 0, outW, outH); ctx.drawImage(img, 0, 0, outW, outH);
+          URL.revokeObjectURL(url); triggerDownload(canvas.toDataURL("image/png"), "{map_id}_" + outW + "x" + outH + ".png");
+          setStatus("PNG saved at " + outW + "x" + outH + " (" + (cropSelect.value === "full" ? "whole map" : "current view") + ")");
+        }};
+        img.onerror = () => {{ URL.revokeObjectURL(url); setStatus("PNG export failed"); }};
+        img.src = url;
+      }}
+      document.getElementById("{map_id}_fullscreen").addEventListener("click", () => {{ if (!document.fullscreenElement) shellEl.requestFullscreen?.(); else document.exitFullscreen?.(); }});
       document.getElementById("{map_id}_save_svg").addEventListener("click", exportSvgFile);
       document.getElementById("{map_id}_save_png").addEventListener("click", exportPngFile);
     </script>
