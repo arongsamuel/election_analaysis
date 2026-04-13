@@ -1283,7 +1283,7 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
       function buildExportSvg(width, height) {{
         const bounds = getBoundsForExport(), padding = cropSelect.value === "view" ? 0 : Math.max(6, Math.round(Math.min(width, height) * 0.004));
         const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-        svg.setAttribute("xmlns", "http://www.w3.org/2000/svg"); svg.setAttribute("width", width); svg.setAttribute("height", height); svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+        svg.setAttribute("xmlns", "http://www.w3.org/2000/svg"); svg.setAttribute("width", width); svg.setAttribute("height", height); svg.setAttribute("viewBox", `0 0 ${{width}} ${{height}}`);
         const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
         bg.setAttribute("x", 0); bg.setAttribute("y", 0); bg.setAttribute("width", width); bg.setAttribute("height", height); bg.setAttribute("fill", "#102235"); svg.appendChild(bg);
         const labelGroup = document.createElementNS("http://www.w3.org/2000/svg", "g"), placed = [];
