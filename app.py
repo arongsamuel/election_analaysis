@@ -654,6 +654,8 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
     legend_id = f"{map_id}_legend"
     toolbar_id = f"{map_id}_toolbar"
     res_id = f"{map_id}_resolution"
+    crop_id = f"{map_id}_crop"
+    label_mode_id = f"{map_id}_label_mode"
     labels_id = f"{map_id}_labels"
     legend_toggle_id = f"{map_id}_legend_toggle"
     status_id = f"{map_id}_status"
@@ -763,12 +765,23 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
     <div class="map-shell" id="{shell_id}">
       <div class="map-toolbar" id="{toolbar_id}">
         <div class="tool-group">
-          <button type="button" id="{map_id}_fullscreen">Fullscreen</button>
+<button type="button" id="{map_id}_fullscreen">Fullscreen</button>
           <select id="{res_id}">
-            <option value="1200x1600">Standard 1200×1600</option>
-            <option value="1800x2400" selected>High 1800×2400</option>
-            <option value="2400x3200">Ultra 2400×3200</option>
-            <option value="3200x4200">Poster 3200×4200</option>
+            <option value="1200x1600">Standard 1200x1600</option>
+            <option value="1800x2400" selected>High 1800x2400</option>
+            <option value="2400x3200">Ultra 2400x3200</option>
+            <option value="3200x4200">Poster 3200x4200</option>
+          </select>
+          <select id="{crop_id}">
+            <option value="full" selected>Whole map</option>
+            <option value="view">Current view</option>
+          </select>
+          <select id="{label_mode_id}">
+            <option value="name" selected>Labels: names</option>
+            <option value="votes">Labels: votes</option>
+            <option value="margin_votes">Labels: vote diff</option>
+            <option value="projected_margin">Labels: projected edge</option>
+            <option value="none">Labels: none</option>
           </select>
           <label><input type="checkbox" id="{labels_id}" checked> Include names</label>
           <label><input type="checkbox" id="{legend_toggle_id}" checked> Include legend</label>
@@ -797,11 +810,42 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
       const labelsToggle = document.getElementById("{labels_id}");
       const legendToggle = document.getElementById("{legend_toggle_id}");
       const resolutionSelect = document.getElementById("{res_id}");
+      const cropSelect = document.getElementById("{crop_id}");
+      const labelModeSelect = document.getElementById("{label_mode_id}");
       const shellEl = document.getElementById("{shell_id}");
-      Object.entries(colorMap).forEach(([label, color]) => {{
+      const hasProjectedFlips = Object.values(rows).some(r => !!(r && r["Projected Flip"]));
+
+      function shadeColor(hex, amt) {{
+        const c = hex.replace("#", "");
+        const n = parseInt(c, 16);
+        const r = Math.max(0, Math.min(255, (n >> 16) + amt));
+        const g = Math.max(0, Math.min(255, ((n >> 8) & 255) + amt));
+        const b = Math.max(0, Math.min(255, (n & 255) + amt));
+        return "#" + (1 << 24 | r << 16 | g << 8 | b).toString(16).slice(1);
+      }}
+
+      function legendEntries() {{
+        const entries = Object.entries(colorMap).map(([label, color]) => ({{
+          label,
+          color,
+          stroke: "#d9c79a"
+        }}));
+        if (hasProjectedFlips) {{
+          ["LDF", "UDF", "NDA"].forEach(label => {{
+            entries.push({{
+              label: label + " projected flip",
+              color: shadeColor(colorMap[label], 38),
+              stroke: "#fff4cf"
+            }});
+          }});
+        }}
+        return entries;
+      }}
+
+      legendEntries().forEach((entry) => {{
         const row = document.createElement("div");
         row.className = "row";
-        row.innerHTML = `<span class="swatch" style="background:${{color}}"></span><span>${{label}}</span>`;
+        row.innerHTML = `<span class="swatch" style="background:${{entry.color}};border-color:${{entry.stroke}}"></span><span>${{entry.label}}</span>`;
         legendEl.appendChild(row);
       }});
       const featureLayers = [];
@@ -809,11 +853,13 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
         style: feature => {{
           const key = feature.properties.__norm_name;
           const row = rows[key];
+          const baseColor = colorMap[(row && row["Top Bloc"]) || "Other"] || fallbackColor;
+          const isFlip = !!(row && row["Projected Flip"]);
           return {{
-            color: "#d9c79a",
-            weight: 0.7,
+            color: isFlip ? "#fff4cf" : "#d9c79a",
+            weight: isFlip ? 1.2 : 0.7,
             fillOpacity: row ? 0.78 : 0.22,
-            fillColor: colorMap[(row && row["Top Bloc"]) || "Other"] || fallbackColor
+            fillColor: isFlip ? shadeColor(baseColor, 38) : baseColor
           }};
         }},
         onEachFeature: (feature, lyr) => {{
@@ -859,13 +905,21 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
       }}
 
       function buildLabelNodes(targetSvg) {{
-        if (!labelsToggle.checked) return;
+        if (!labelsToggle.checked || labelModeSelect.value === "none") return;
         const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
         featureLayers.forEach(([feature, lyr]) => {{
           const props = feature.properties || {{}};
           const row = rows[props.__norm_name];
           const name = (row && row["Constituency"]) || props.AC_NAME;
-          if (!name) return;
+          let labelText = name;
+          if (row && labelModeSelect.value === "votes" && row["Votes Polled"] != null) {{
+            labelText = Math.round(Number(row["Votes Polled"])).toLocaleString();
+          }} else if (row && labelModeSelect.value === "margin_votes" && row["Avg Margin"] != null) {{
+            labelText = "±" + Math.round(Number(row["Avg Margin"])).toLocaleString();
+          }} else if (row && labelModeSelect.value === "projected_margin" && row["Projected Margin %"] != null) {{
+            labelText = Number(row["Projected Margin %"]).toFixed(1) + "%";
+          }}
+          if (!labelText) return;
           const center = lyr.getBounds().getCenter();
           const pt = map.latLngToLayerPoint(center);
           const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
@@ -879,7 +933,7 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
           text.setAttribute("stroke", "#0b1120");
           text.setAttribute("stroke-width", "2");
           text.setAttribute("font-family", "DM Sans, sans-serif");
-          text.textContent = name;
+          text.textContent = labelText;
           g.appendChild(text);
         }});
         targetSvg.appendChild(g);
@@ -911,7 +965,7 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
         title.setAttribute("font-family", "DM Sans, sans-serif");
         title.textContent = "Legend";
         g.appendChild(title);
-        Object.entries(colorMap).forEach(([label, color], idx) => {{
+        legendEntries().forEach((entry, idx) => {{
           const yy = y + 44 + idx * 24;
           const sw = document.createElementNS("http://www.w3.org/2000/svg", "rect");
           sw.setAttribute("x", x + 16);
@@ -919,8 +973,8 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
           sw.setAttribute("width", 14);
           sw.setAttribute("height", 14);
           sw.setAttribute("rx", 3);
-          sw.setAttribute("fill", color);
-          sw.setAttribute("stroke", "#d9c79a");
+          sw.setAttribute("fill", entry.color);
+          sw.setAttribute("stroke", entry.stroke);
           g.appendChild(sw);
           const tx = document.createElementNS("http://www.w3.org/2000/svg", "text");
           tx.setAttribute("x", x + 40);
@@ -928,7 +982,7 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
           tx.setAttribute("fill", "#e8e4da");
           tx.setAttribute("font-size", "12");
           tx.setAttribute("font-family", "DM Sans, sans-serif");
-          tx.textContent = label;
+          tx.textContent = entry.label;
           g.appendChild(tx);
         }});
         targetSvg.appendChild(g);
@@ -938,15 +992,25 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
         const sourceSvg = document.querySelector("#{map_id} .leaflet-overlay-pane svg");
         if (!sourceSvg) return null;
         const cloned = sourceSvg.cloneNode(true);
-        const width = map.getSize().x;
-        const height = map.getSize().y;
+        const sourceGroup = cloned.querySelector("g");
+        let bbox = null;
+        try {{
+          bbox = sourceGroup ? sourceGroup.getBBox() : cloned.getBBox();
+        }} catch (e) {{
+          bbox = null;
+        }}
+        const useCurrentView = cropSelect.value === "view";
+        const width = useCurrentView || !bbox ? map.getSize().x : Math.ceil(bbox.width + 80);
+        const height = useCurrentView || !bbox ? map.getSize().y : Math.ceil(bbox.height + 80);
+        const minX = useCurrentView || !bbox ? 0 : Math.floor(bbox.x - 40);
+        const minY = useCurrentView || !bbox ? 0 : Math.floor(bbox.y - 40);
         cloned.setAttribute("xmlns", "http://www.w3.org/2000/svg");
         cloned.setAttribute("width", width);
         cloned.setAttribute("height", height);
-        cloned.setAttribute("viewBox", `0 0 ${{width}} ${{height}}`);
+        cloned.setAttribute("viewBox", `${{minX}} ${{minY}} ${{width}} ${{height}}`);
         const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-        bg.setAttribute("x", 0);
-        bg.setAttribute("y", 0);
+        bg.setAttribute("x", minX);
+        bg.setAttribute("y", minY);
         bg.setAttribute("width", width);
         bg.setAttribute("height", height);
         bg.setAttribute("fill", "#102235");
@@ -1000,7 +1064,7 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
           ctx.drawImage(img, 0, 0, outW, outH);
           URL.revokeObjectURL(url);
           triggerDownload(canvas.toDataURL("image/png"), "{map_id}_" + outW + "x" + outH + ".png");
-          setStatus(`PNG saved at ${{outW}}×${{outH}}`);
+          setStatus("PNG saved at " + outW + "x" + outH + " (" + (cropSelect.value === "full" ? "whole map" : "current view") + ")");
         }};
         img.onerror = () => {{
           URL.revokeObjectURL(url);
