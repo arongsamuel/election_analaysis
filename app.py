@@ -10,6 +10,7 @@ import difflib
 import re
 import html
 import json
+import uuid
 import numpy as np
 import streamlit.components.v1 as components
 
@@ -633,7 +634,7 @@ def summarize_forecast_with_ai(user_prompt, target_bloc, swings, use_split_facto
     except Exception:
         return None
 
-def render_kerala_constituency_map(map_df, geojson):
+def render_kerala_constituency_map(map_df, geojson, map_key=None):
     color_map = {
         "LDF": A1,
         "UDF": A2,
@@ -647,6 +648,15 @@ def render_kerala_constituency_map(map_df, geojson):
     }
     payload = json.dumps(map_rows)
     geo_payload = json.dumps(geojson)
+    legend_payload = json.dumps(color_map)
+    map_id = f"kerala_map_{re.sub(r'[^a-zA-Z0-9_]+', '_', map_key or uuid.uuid4().hex)}"
+    shell_id = f"{map_id}_shell"
+    legend_id = f"{map_id}_legend"
+    toolbar_id = f"{map_id}_toolbar"
+    res_id = f"{map_id}_resolution"
+    labels_id = f"{map_id}_labels"
+    legend_toggle_id = f"{map_id}_legend_toggle"
+    status_id = f"{map_id}_status"
     html_block = f"""
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
@@ -657,7 +667,45 @@ def render_kerala_constituency_map(map_df, geojson):
         border-radius:18px;
         padding:14px;
       }}
-      #kerala-map {{
+      .map-toolbar {{
+        display:flex;
+        flex-wrap:wrap;
+        gap:10px;
+        align-items:center;
+        justify-content:space-between;
+        margin-bottom:10px;
+        padding:10px 12px;
+        border:1px solid #2a4060;
+        border-radius:12px;
+        background:rgba(8,17,30,0.55);
+      }}
+      .map-toolbar .tool-group {{
+        display:flex;
+        flex-wrap:wrap;
+        gap:8px;
+        align-items:center;
+      }}
+      .map-toolbar button, .map-toolbar select {{
+        background:#102235;
+        color:#e8e4da;
+        border:1px solid #2a4060;
+        border-radius:8px;
+        padding:7px 10px;
+        font-size:12px;
+        cursor:pointer;
+      }}
+      .map-toolbar label {{
+        font-size:12px;
+        color:#c8d8e8;
+        display:flex;
+        gap:6px;
+        align-items:center;
+      }}
+      .map-toolbar .status {{
+        font-size:12px;
+        color:#8fa3c0;
+      }}
+      #{map_id} {{
         width:100%;
         height:780px;
         border-radius:14px;
@@ -666,6 +714,42 @@ def render_kerala_constituency_map(map_df, geojson):
       .leaflet-container {{
         background:#102235;
         font-family:'DM Sans',sans-serif;
+      }}
+      .export-legend {{
+        position:absolute;
+        right:26px;
+        bottom:26px;
+        background:rgba(11,17,32,0.92);
+        border:1px solid #2a4060;
+        border-radius:12px;
+        padding:10px 12px;
+        color:#e8e4da;
+        z-index:800;
+        min-width:130px;
+      }}
+      .export-legend h4 {{
+        margin:0 0 8px 0;
+        font-size:12px;
+        color:#c9a84c;
+        letter-spacing:0.6px;
+        text-transform:uppercase;
+      }}
+      .export-legend .row {{
+        display:flex;
+        align-items:center;
+        gap:8px;
+        margin:5px 0;
+        font-size:12px;
+      }}
+      .export-legend .swatch {{
+        width:12px;
+        height:12px;
+        border-radius:3px;
+        border:1px solid #d9c79a;
+        display:inline-block;
+      }}
+      .map-frame {{
+        position:relative;
       }}
       .leaflet-tooltip {{
         background:#0f1e30;
@@ -676,13 +760,51 @@ def render_kerala_constituency_map(map_df, geojson):
         padding:10px 12px;
       }}
     </style>
-    <div class="map-shell"><div id="kerala-map"></div></div>
+    <div class="map-shell" id="{shell_id}">
+      <div class="map-toolbar" id="{toolbar_id}">
+        <div class="tool-group">
+          <button type="button" id="{map_id}_fullscreen">Fullscreen</button>
+          <select id="{res_id}">
+            <option value="1200x1600">Standard 1200×1600</option>
+            <option value="1800x2400" selected>High 1800×2400</option>
+            <option value="2400x3200">Ultra 2400×3200</option>
+            <option value="3200x4200">Poster 3200×4200</option>
+          </select>
+          <label><input type="checkbox" id="{labels_id}" checked> Include names</label>
+          <label><input type="checkbox" id="{legend_toggle_id}" checked> Include legend</label>
+        </div>
+        <div class="tool-group">
+          <button type="button" id="{map_id}_save_png">Save PNG</button>
+          <button type="button" id="{map_id}_save_svg">Save SVG</button>
+          <span class="status" id="{status_id}">Ready</span>
+        </div>
+      </div>
+      <div class="map-frame">
+        <div id="{map_id}"></div>
+        <div class="export-legend" id="{legend_id}">
+          <h4>Legend</h4>
+        </div>
+      </div>
+    </div>
     <script>
       const rows = {payload};
       const geo = {geo_payload};
-      const colorMap = {json.dumps(color_map)};
+      const colorMap = {legend_payload};
       const fallbackColor = "#334b60";
-      const map = L.map("kerala-map", {{ zoomControl: true, attributionControl: false }});
+      const map = L.map("{map_id}", {{ zoomControl: true, attributionControl: false, preferCanvas: false }});
+      const legendEl = document.getElementById("{legend_id}");
+      const statusEl = document.getElementById("{status_id}");
+      const labelsToggle = document.getElementById("{labels_id}");
+      const legendToggle = document.getElementById("{legend_toggle_id}");
+      const resolutionSelect = document.getElementById("{res_id}");
+      const shellEl = document.getElementById("{shell_id}");
+      Object.entries(colorMap).forEach(([label, color]) => {{
+        const row = document.createElement("div");
+        row.className = "row";
+        row.innerHTML = `<span class="swatch" style="background:${{color}}"></span><span>${{label}}</span>`;
+        legendEl.appendChild(row);
+      }});
+      const featureLayers = [];
       const layer = L.geoJSON(geo, {{
         style: feature => {{
           const key = feature.properties.__norm_name;
@@ -695,6 +817,7 @@ def render_kerala_constituency_map(map_df, geojson):
           }};
         }},
         onEachFeature: (feature, lyr) => {{
+          featureLayers.push([feature, lyr]);
           const props = feature.properties || {{}};
           const row = rows[props.__norm_name];
           const turnout = row && row["Turnout %"] != null ? Number(row["Turnout %"]).toFixed(1) + "%" : "NA";
@@ -730,9 +853,171 @@ def render_kerala_constituency_map(map_df, geojson):
         }}
       }}).addTo(map);
       map.fitBounds(layer.getBounds(), {{ padding: [8, 8] }});
+
+      function setStatus(text) {{
+        statusEl.textContent = text;
+      }}
+
+      function buildLabelNodes(targetSvg) {{
+        if (!labelsToggle.checked) return;
+        const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+        featureLayers.forEach(([feature, lyr]) => {{
+          const props = feature.properties || {{}};
+          const row = rows[props.__norm_name];
+          const name = (row && row["Constituency"]) || props.AC_NAME;
+          if (!name) return;
+          const center = lyr.getBounds().getCenter();
+          const pt = map.latLngToLayerPoint(center);
+          const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+          text.setAttribute("x", pt.x);
+          text.setAttribute("y", pt.y);
+          text.setAttribute("fill", "#f3efe6");
+          text.setAttribute("font-size", "12");
+          text.setAttribute("font-weight", "700");
+          text.setAttribute("text-anchor", "middle");
+          text.setAttribute("paint-order", "stroke");
+          text.setAttribute("stroke", "#0b1120");
+          text.setAttribute("stroke-width", "2");
+          text.setAttribute("font-family", "DM Sans, sans-serif");
+          text.textContent = name;
+          g.appendChild(text);
+        }});
+        targetSvg.appendChild(g);
+      }}
+
+      function buildLegendNode(targetSvg, width, height) {{
+        if (!legendToggle.checked) return;
+        const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+        const legendWidth = 180;
+        const legendHeight = 32 + Object.keys(colorMap).length * 24;
+        const x = width - legendWidth - 24;
+        const y = height - legendHeight - 24;
+        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        rect.setAttribute("x", x);
+        rect.setAttribute("y", y);
+        rect.setAttribute("width", legendWidth);
+        rect.setAttribute("height", legendHeight);
+        rect.setAttribute("rx", 14);
+        rect.setAttribute("fill", "#0b1120");
+        rect.setAttribute("fill-opacity", "0.94");
+        rect.setAttribute("stroke", "#2a4060");
+        g.appendChild(rect);
+        const title = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        title.setAttribute("x", x + 16);
+        title.setAttribute("y", y + 22);
+        title.setAttribute("fill", "#c9a84c");
+        title.setAttribute("font-size", "13");
+        title.setAttribute("font-weight", "700");
+        title.setAttribute("font-family", "DM Sans, sans-serif");
+        title.textContent = "Legend";
+        g.appendChild(title);
+        Object.entries(colorMap).forEach(([label, color], idx) => {{
+          const yy = y + 44 + idx * 24;
+          const sw = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+          sw.setAttribute("x", x + 16);
+          sw.setAttribute("y", yy - 10);
+          sw.setAttribute("width", 14);
+          sw.setAttribute("height", 14);
+          sw.setAttribute("rx", 3);
+          sw.setAttribute("fill", color);
+          sw.setAttribute("stroke", "#d9c79a");
+          g.appendChild(sw);
+          const tx = document.createElementNS("http://www.w3.org/2000/svg", "text");
+          tx.setAttribute("x", x + 40);
+          tx.setAttribute("y", yy + 2);
+          tx.setAttribute("fill", "#e8e4da");
+          tx.setAttribute("font-size", "12");
+          tx.setAttribute("font-family", "DM Sans, sans-serif");
+          tx.textContent = label;
+          g.appendChild(tx);
+        }});
+        targetSvg.appendChild(g);
+      }}
+
+      function buildExportSvg() {{
+        const sourceSvg = document.querySelector("#{map_id} .leaflet-overlay-pane svg");
+        if (!sourceSvg) return null;
+        const cloned = sourceSvg.cloneNode(true);
+        const width = map.getSize().x;
+        const height = map.getSize().y;
+        cloned.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+        cloned.setAttribute("width", width);
+        cloned.setAttribute("height", height);
+        cloned.setAttribute("viewBox", `0 0 ${{width}} ${{height}}`);
+        const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        bg.setAttribute("x", 0);
+        bg.setAttribute("y", 0);
+        bg.setAttribute("width", width);
+        bg.setAttribute("height", height);
+        bg.setAttribute("fill", "#102235");
+        cloned.insertBefore(bg, cloned.firstChild);
+        buildLabelNodes(cloned);
+        buildLegendNode(cloned, width, height);
+        return {{ svg: cloned, width, height }};
+      }}
+
+      function triggerDownload(href, filename) {{
+        const a = document.createElement("a");
+        a.href = href;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }}
+
+      function exportSvgFile() {{
+        const built = buildExportSvg();
+        if (!built) {{
+          setStatus("Export failed");
+          return;
+        }}
+        const markup = new XMLSerializer().serializeToString(built.svg);
+        const blob = new Blob([markup], {{ type: "image/svg+xml;charset=utf-8" }});
+        const url = URL.createObjectURL(blob);
+        triggerDownload(url, "{map_id}.svg");
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        setStatus("SVG saved");
+      }}
+
+      function exportPngFile() {{
+        const built = buildExportSvg();
+        if (!built) {{
+          setStatus("Export failed");
+          return;
+        }}
+        const [outW, outH] = resolutionSelect.value.split("x").map(Number);
+        const markup = new XMLSerializer().serializeToString(built.svg);
+        const blob = new Blob([markup], {{ type: "image/svg+xml;charset=utf-8" }});
+        const url = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = () => {{
+          const canvas = document.createElement("canvas");
+          canvas.width = outW;
+          canvas.height = outH;
+          const ctx = canvas.getContext("2d");
+          ctx.fillStyle = "#102235";
+          ctx.fillRect(0, 0, outW, outH);
+          ctx.drawImage(img, 0, 0, outW, outH);
+          URL.revokeObjectURL(url);
+          triggerDownload(canvas.toDataURL("image/png"), "{map_id}_" + outW + "x" + outH + ".png");
+          setStatus(`PNG saved at ${{outW}}×${{outH}}`);
+        }};
+        img.onerror = () => {{
+          URL.revokeObjectURL(url);
+          setStatus("PNG export failed");
+        }};
+        img.src = url;
+      }}
+
+      document.getElementById("{map_id}_fullscreen").addEventListener("click", () => {{
+        if (!document.fullscreenElement) shellEl.requestFullscreen?.();
+        else document.exitFullscreen?.();
+      }});
+      document.getElementById("{map_id}_save_svg").addEventListener("click", exportSvgFile);
+      document.getElementById("{map_id}_save_png").addEventListener("click", exportPngFile);
     </script>
     """
-    components.html(html_block, height=820, scrolling=False)
+    components.html(html_block, height=870, scrolling=False)
 
 # ─────────────────────────────────────────────
 # 5. STATISTICS
@@ -1510,7 +1795,7 @@ def page_maps(df):
         return
 
     with c1:
-        render_kerala_constituency_map(map_df, geojson)
+        render_kerala_constituency_map(map_df, geojson, map_key=f"base_{selected_year}")
 
     with c2:
         top_bloc = map_df["Top Bloc"].value_counts()
@@ -1666,7 +1951,11 @@ def page_maps(df):
                     seat_count = proj_df["Top Bloc"].value_counts()
                     c_map, c_meta = st.columns([1.2, 0.8])
                     with c_map:
-                        render_kerala_constituency_map(proj_df, geojson)
+                        render_kerala_constituency_map(
+                            proj_df,
+                            geojson,
+                            map_key=f"forecast_{target_bloc}_{scenario['swing']}_{'split' if use_split_factor else 'plain'}",
+                        )
                     with c_meta:
                         st.markdown(
                             f'<div class="metric-row">'
