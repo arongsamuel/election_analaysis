@@ -780,8 +780,11 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
           <select id="{label_mode_id}">
             <option value="name" selected>Labels: names</option>
             <option value="votes">Labels: votes</option>
+            <option value="name_votes">Labels: name + votes</option>
             <option value="margin_votes">Labels: vote diff</option>
+            <option value="name_margin_votes">Labels: name + vote diff</option>
             <option value="projected_margin">Labels: projected edge</option>
+            <option value="name_projected_margin">Labels: name + projected edge</option>
             <option value="none">Labels: none</option>
           </select>
           <label><input type="checkbox" id="{labels_id}" checked> Include names</label>
@@ -1249,8 +1252,11 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
         const name = (row && row["Constituency"]) || props.AC_NAME;
         if (labelModeSelect.value === "none") return "";
         if (row && labelModeSelect.value === "votes" && row["Votes Polled"] != null) return Math.round(Number(row["Votes Polled"])).toLocaleString();
+        if (row && labelModeSelect.value === "name_votes" && row["Votes Polled"] != null) return (name || "") + " • " + Math.round(Number(row["Votes Polled"])).toLocaleString();
         if (row && labelModeSelect.value === "margin_votes" && row["Avg Margin"] != null) return "+/- " + Math.round(Number(row["Avg Margin"])).toLocaleString();
+        if (row && labelModeSelect.value === "name_margin_votes" && row["Avg Margin"] != null) return (name || "") + " • +/- " + Math.round(Number(row["Avg Margin"])).toLocaleString();
         if (row && labelModeSelect.value === "projected_margin" && row["Projected Margin %"] != null) return Number(row["Projected Margin %"]).toFixed(1) + "%";
+        if (row && labelModeSelect.value === "name_projected_margin" && row["Projected Margin %"] != null) return (name || "") + " • " + Number(row["Projected Margin %"]).toFixed(1) + "%";
         return name || "";
       }}
       function featurePathString(feature, bounds, width, height, padding) {{
@@ -2268,6 +2274,7 @@ def page_maps(df):
                     base_year = scenario["base_year"]
                     flips = proj_df[proj_df["Projected Flip"]].copy().sort_values("Margin %")
                     seat_count = proj_df["Top Bloc"].value_counts()
+                    top_party_counts = proj_df["Top Party"].value_counts()
                     c_map, c_meta = st.columns([1.2, 0.8])
                     with c_map:
                         render_kerala_constituency_map(
@@ -2285,6 +2292,31 @@ def page_maps(df):
                             f'</div>',
                             unsafe_allow_html=True
                         )
+                        st.markdown("**Bloc Legend**")
+                        forecast_legend_rows = [
+                            ("LDF", A1),
+                            ("UDF", A2),
+                            ("NDA", "#f0a500"),
+                            ("Other", "#557089"),
+                        ]
+                        for label, color in forecast_legend_rows:
+                            count = int(seat_count.get(label, 0))
+                            st.markdown(
+                                f"<div style='display:flex;align-items:center;gap:0.6rem;margin:0.35rem 0;'>"
+                                f"<span style='width:14px;height:14px;border-radius:4px;background:{color};display:inline-block;border:1px solid #d9c79a;'></span>"
+                                f"<span>{label}</span><span style='color:{MUTED};margin-left:auto;'>{count} constituencies</span>"
+                                f"</div>",
+                                unsafe_allow_html=True,
+                            )
+                        if not top_party_counts.empty:
+                            st.markdown("**Most Frequent Leading Party**")
+                            st.markdown(
+                                f"<div style='padding:0.8rem 1rem;background:{CARD_BG};border:1px solid #2a4060;border-radius:10px;'>"
+                                f"<div style='font-size:1.4rem;font-weight:700;color:{TEXT_MAIN};'>{html.escape(str(top_party_counts.index[0]))}</div>"
+                                f"<div style='font-size:0.8rem;color:{MUTED};'>Leads in {int(top_party_counts.iloc[0])} constituencies</div>"
+                                f"</div>",
+                                unsafe_allow_html=True,
+                            )
                         st.markdown("**Closest Battlegrounds**")
                         battlegrounds = proj_df.copy().sort_values("Projected Margin %", key=lambda s: s.abs()).head(15)
                         show_cols = ["Constituency", "Current Winner", "Top Bloc", "Projected Margin %", "Confidence"]
