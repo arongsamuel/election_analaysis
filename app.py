@@ -1,6 +1,7 @@
 import matplotlib
 matplotlib.use('Agg')
 
+from pathlib import Path
 import streamlit as st
 import pandas as pd
 import google.generativeai as genai
@@ -1364,6 +1365,9 @@ def frac(vs):
 def entropy(vs):
     p=np.array(vs)/100; p=p[p>0]; return -np.sum(p*np.log(p))
 
+DEFAULT_DATASET_NAME = "Assembly 1957-2021.xlsx"
+DEFAULT_DATASET_PATH = Path(DEFAULT_DATASET_NAME)
+
 # ─────────────────────────────────────────────
 # 6. DATA LOADING
 # ─────────────────────────────────────────────
@@ -1372,7 +1376,8 @@ def load_data(uploaded_files):
     all_dfs = []
     for file in uploaded_files:
         try:
-            ext = file.name.split('.')[-1].lower()
+            file_name = file.name if hasattr(file, "name") else Path(str(file)).name
+            ext = file_name.split('.')[-1].lower()
             def proc(df, src):
                 df.columns = [c.strip() for c in df.columns]
                 rmap = {
@@ -1400,9 +1405,9 @@ def load_data(uploaded_files):
                 for sheet, df in pd.read_excel(file, sheet_name=None).items():
                     all_dfs.append(proc(df, sheet))
             elif ext == 'csv':
-                all_dfs.append(proc(pd.read_csv(file), file.name))
+                all_dfs.append(proc(pd.read_csv(file), file_name))
         except Exception as e:
-            st.error(f"Error: {file.name}: {e}")
+            st.error(f"Error: {file_name}: {e}")
     if not all_dfs: return None
     df = pd.concat(all_dfs, ignore_index=True)
     df.dropna(subset=['Year'], inplace=True)
@@ -2866,6 +2871,9 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+if "use_default_data" not in st.session_state:
+    st.session_state.use_default_data = False
+
 with st.sidebar:
     st.markdown("### ⚙️ Configuration")
     if not api_key:
@@ -2877,20 +2885,43 @@ with st.sidebar:
             st.rerun()
     st.divider()
     uploaded_files = st.file_uploader("Upload Excel/CSV", accept_multiple_files=True, type=['xlsx','xls','csv'])
+    if uploaded_files:
+        st.session_state.use_default_data = False
+    if DEFAULT_DATASET_PATH.exists():
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Use Default Election Data", key="use_default_data_btn", width='stretch'):
+                st.session_state.use_default_data = True
+                st.rerun()
+        with c2:
+            with DEFAULT_DATASET_PATH.open("rb") as default_file:
+                st.download_button(
+                    "Download Default Data",
+                    data=default_file.read(),
+                    file_name=DEFAULT_DATASET_PATH.name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_default_data_btn",
+                    width='stretch',
+                )
 
-if not uploaded_files:
+using_default_data = bool(st.session_state.use_default_data and DEFAULT_DATASET_PATH.exists())
+data_sources = [DEFAULT_DATASET_PATH] if using_default_data else uploaded_files
+
+if not data_sources:
     st.markdown("""
     <div style="text-align:center;padding:4rem 2rem;opacity:0.6;">
       <div style="font-size:3rem;">🗺️</div>
       <div style="font-family:'Playfair Display',serif;font-size:1.4rem;color:#c9a84c;margin-top:0.5rem;">Upload election data to begin</div>
-      <div style="font-size:0.85rem;color:#8fa3c0;margin-top:0.4rem;">Supports .xlsx (multi-sheet per year) or .csv</div>
+      <div style="font-size:0.85rem;color:#8fa3c0;margin-top:0.4rem;">Supports .xlsx (multi-sheet per year) or .csv, or use the bundled Assembly 1957-2021 workbook.</div>
     </div>""", unsafe_allow_html=True)
     st.stop()
 
 with st.spinner("Loading..."):
-    master_df = load_data(uploaded_files)
+    master_df = load_data(data_sources)
 
 if master_df is None: st.error("Could not load data."); st.stop()
+if using_default_data:
+    st.caption(f"Using default dataset: `{DEFAULT_DATASET_PATH.name}`")
 st.toast(f"✅ {len(master_df):,} records across {master_df['Year'].nunique()} elections", icon="🗳️")
 
 # ── Session state init ──────────────────────
