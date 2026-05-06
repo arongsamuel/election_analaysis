@@ -1365,8 +1365,21 @@ def frac(vs):
 def entropy(vs):
     p=np.array(vs)/100; p=p[p>0]; return -np.sum(p*np.log(p))
 
-DEFAULT_DATASET_NAME = "Assembly 1957-2021.xlsx"
-DEFAULT_DATASET_PATH = Path(DEFAULT_DATASET_NAME)
+def resolve_default_dataset_path():
+    candidates = list(Path(".").glob("Assembly *.xlsx")) + list(Path(".").glob("Assembly *.xls"))
+    if not candidates:
+        return Path("Assembly 1957-2021.xlsx")
+
+    def sort_key(path):
+        years = [int(y) for y in re.findall(r"\d{4}", path.stem)]
+        latest_year = max(years) if years else 0
+        return (latest_year, path.name.lower())
+
+    return sorted(candidates, key=sort_key)[-1]
+
+
+DEFAULT_DATASET_PATH = resolve_default_dataset_path()
+DEFAULT_DATASET_NAME = DEFAULT_DATASET_PATH.name
 
 # ─────────────────────────────────────────────
 # 6. DATA LOADING
