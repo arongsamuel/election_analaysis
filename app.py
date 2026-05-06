@@ -341,6 +341,38 @@ def load_constituency_geojson():
         props["__norm_name"] = resolved or normalize_constituency_name(props.get("AC_NAME", ""))
     return geo
 
+
+def apply_constituency_normalization(df):
+    cc = smart_col(df, "Constituency Name")
+    if cc not in df.columns:
+        return df
+
+    try:
+        official_map = build_constituency_reference(load_constituency_geojson())
+    except Exception:
+        official_map = {}
+
+    raw_col = "Constituency Name Raw"
+    if raw_col not in df.columns:
+        df[raw_col] = df[cc]
+
+    if official_map:
+        resolved = df[cc].apply(lambda v: resolve_constituency_name(v, official_map))
+        df["Constituency Name Clean"] = resolved.apply(lambda x: x[0] if x else None)
+        df["Map Constituency"] = resolved.apply(lambda x: x[1] if x else None)
+        df["Constituency Match Type"] = resolved.apply(lambda x: x[2] if x else "missing")
+    else:
+        df["Constituency Name Clean"] = df[cc].apply(normalize_constituency_name)
+        df["Map Constituency"] = np.nan
+        df["Constituency Match Type"] = df["Constituency Name Clean"].apply(lambda v: "exact" if pd.notna(v) else "missing")
+
+    df["Constituency Name Clean"] = df["Constituency Name Clean"].where(
+        df["Constituency Name Clean"].notna(),
+        df[cc].astype(str).str.strip()
+    )
+    df[cc] = df["Constituency Name Clean"]
+    return df
+
 def build_constituency_summary(df, year):
     cc = smart_col(df, "Constituency Name")
     if cc not in df.columns:
@@ -1456,6 +1488,7 @@ def load_data(uploaded_files):
     df = pd.concat(all_dfs, ignore_index=True)
     df.dropna(subset=['Year'], inplace=True)
     df['Year'] = df['Year'].astype(int)
+    df = apply_constituency_normalization(df)
     wc = smart_col(df, "Win Party")
     if wc in df.columns:
         df["Party Family"] = df[wc].astype(str).apply(assign_family)
