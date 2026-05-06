@@ -1199,6 +1199,7 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
             <option value="minimal">Density: minimal</option>
             <option value="compact" selected>Density: compact</option>
             <option value="detailed">Density: detailed</option>
+            <option value="all_seats">Density: all seats</option>
             <option value="battlegrounds">Density: battlegrounds</option>
             <option value="major">Density: major seats</option>
           </select>
@@ -1302,6 +1303,7 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
         const density = labelDensitySelect.value;
         if (density === "minimal") return {{ maxLabels: zoom >= 10 ? 55 : 28, minGap: zoom >= 10 ? 34 : 50, preferCombined:false, css:"compact", leaderLines:false }};
         if (density === "detailed") return {{ maxLabels: zoom >= 11 ? 140 : (zoom >= 10 ? 105 : 70), minGap: zoom >= 11 ? 16 : (zoom >= 10 ? 22 : 28), preferCombined:true, css:"", leaderLines:true }};
+        if (density === "all_seats") return {{ maxLabels: 999, minGap: zoom >= 11 ? 10 : (zoom >= 10 ? 13 : 16), preferCombined:true, css:"compact", leaderLines:true, allSeats:true }};
         if (density === "battlegrounds") return {{ maxLabels: zoom >= 10 ? 45 : 28, minGap: zoom >= 10 ? 26 : 34, preferCombined:true, battlegroundsOnly:true, css:"compact", leaderLines:true }};
         if (density === "major") return {{ maxLabels: zoom >= 10 ? 40 : 24, minGap: zoom >= 10 ? 28 : 36, preferCombined:true, majorOnly:true, css:"compact", leaderLines:true }};
         return {{ maxLabels: zoom >= 11 ? 110 : (zoom >= 10 ? 78 : 50), minGap: zoom >= 11 ? 18 : (zoom >= 10 ? 24 : 32), preferCombined:true, css:"compact", leaderLines:true }};
@@ -1345,7 +1347,8 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
         candidates.sort((a, b) => b.score - a.score);
         const boxes = [];
         const offsets = candidateOffsets(config);
-        candidates.slice(0, config.maxLabels * 2).forEach((item) => {{
+        const renderCandidates = config.allSeats ? candidates : candidates.slice(0, config.maxLabels * 2);
+        renderCandidates.forEach((item) => {{
           if (boxes.length >= config.maxLabels) return;
           const center = item.lyr.getBounds().getCenter();
           const basePoint = map.latLngToContainerPoint(center);
@@ -1515,7 +1518,8 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
             candidates = candidates.filter(item => item.row && item.row["Votes Polled"] != null).sort((a, b) => Number(b.row["Votes Polled"]) - Number(a.row["Votes Polled"])).slice(0, 36);
           }}
           candidates.sort((a, b) => b.score - a.score);
-          candidates.slice(0, density.maxLabels * 2).forEach((item) => {{
+          const renderCandidates = density.allSeats ? candidates : candidates.slice(0, density.maxLabels * 2);
+          renderCandidates.forEach((item) => {{
             if (placed.length >= density.maxLabels) return;
             const c = item.lyr.getBounds().getCenter();
             const basePoint = {{ x: projectPoint(c.lng, c.lat, bounds, width, height, padding)[0], y: projectPoint(c.lng, c.lat, bounds, width, height, padding)[1] }};
