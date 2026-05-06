@@ -2911,7 +2911,7 @@ def page_ai(df):
 st.markdown("""
 <div class="atlas-header">
   <div class="atlas-title">🗳️ Kerala Election Atlas</div>
-  <div class="atlas-subtitle">Assembly Elections 1957 – 2021 · Constituency-Level Intelligence</div>
+  <div class="atlas-subtitle">Assembly Elections 1957 – 2026 · Constituency-Level Intelligence</div>
 </div>
 """, unsafe_allow_html=True)
 
