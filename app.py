@@ -1396,6 +1396,12 @@ def load_data(uploaded_files):
                 rmap = {
                     " Elecors":"Electors","Elecors":"Electors",
                     "Votes polled ":"Votes Polled","Votes polled":"Votes Polled",
+                    "Win party":"Win Party",
+                    "Win front":"Win Alliance",
+                    "Run front":"Run Alliance",
+                    "Win vote":"Win Vote",
+                    "win %":"Win %",
+                    "Run %":"Run %",
                     "Margin Win Vote-Run Vote":"Margin",
                     "Others Vote {PollVote-(Win vote+ Run Vote )}":"Others Vote",
                     "NDA/ BJP vote":"NDA BJP Vote",
@@ -1404,6 +1410,31 @@ def load_data(uploaded_files):
                     "Type of Cons":"Category",
                 }
                 df.rename(columns=rmap, inplace=True)
+                for numeric_col in ["Win Vote", "Run Vote", "Win %", "Run %", "Margin", "Votes Polled", "Electors", "Others Vote", "NDA BJP Vote"]:
+                    if numeric_col in df.columns:
+                        df[numeric_col] = pd.to_numeric(df[numeric_col], errors='coerce')
+
+                if "Votes Polled" not in df.columns:
+                    inferred_votes = []
+                    if {"Win Vote", "Win %"}.issubset(df.columns):
+                        inferred_votes.append(df["Win Vote"] / (df["Win %"] / 100).replace(0, np.nan))
+                    if {"Run Vote", "Run %"}.issubset(df.columns):
+                        inferred_votes.append(df["Run Vote"] / (df["Run %"] / 100).replace(0, np.nan))
+                    if inferred_votes:
+                        inferred_df = pd.concat(inferred_votes, axis=1)
+                        df["Votes Polled"] = inferred_df.mean(axis=1).round()
+
+                if "Others Vote" not in df.columns and {"Votes Polled", "Win Vote", "Run Vote"}.issubset(df.columns):
+                    df["Others Vote"] = (df["Votes Polled"] - df["Win Vote"] - df["Run Vote"]).clip(lower=0)
+
+                if "NDA BJP Vote" not in df.columns:
+                    nda_vote = pd.Series(np.nan, index=df.index)
+                    if {"Win Alliance", "Win Vote"}.issubset(df.columns):
+                        nda_vote = nda_vote.where(df["Win Alliance"].astype(str).str.upper() != "NDA", df["Win Vote"])
+                    if {"Run Alliance", "Run Vote"}.issubset(df.columns):
+                        nda_vote = nda_vote.where(df["Run Alliance"].astype(str).str.upper() != "NDA", df["Run Vote"])
+                    df["NDA BJP Vote"] = nda_vote
+
                 if 'Cons No.' in df.columns:
                     df['Cons No.'] = df['Cons No.'].astype(str)
                 if 'Year' not in df.columns:
