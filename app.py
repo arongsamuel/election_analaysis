@@ -689,6 +689,7 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
     res_id = f"{map_id}_resolution"
     crop_id = f"{map_id}_crop"
     label_mode_id = f"{map_id}_label_mode"
+    legend_pos_id = f"{map_id}_legend_pos"
     labels_id = f"{map_id}_labels"
     legend_toggle_id = f"{map_id}_legend_toggle"
     status_id = f"{map_id}_status"
@@ -1151,7 +1152,9 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
       .map-toolbar .status {{ font-size:12px; color:#8fa3c0; }}
       #{map_id} {{ width:100%; height:780px; border-radius:14px; overflow:hidden; }}
       .leaflet-container {{ background:#102235; font-family:'DM Sans',sans-serif; }}
-      .export-legend {{ position:absolute; right:26px; bottom:26px; background:rgba(11,17,32,0.92); border:1px solid #2a4060; border-radius:12px; padding:10px 12px; color:#e8e4da; z-index:800; min-width:160px; }}
+      .export-legend {{ position:absolute; background:rgba(11,17,32,0.92); border:1px solid #2a4060; border-radius:12px; padding:10px 12px; color:#e8e4da; z-index:800; min-width:160px; }}
+      .export-legend.pos-top-right {{ top:26px; right:26px; bottom:auto; left:auto; }}
+      .export-legend.pos-bottom-left {{ bottom:26px; left:26px; top:auto; right:auto; }}
       .export-legend h4 {{ margin:0 0 8px 0; font-size:12px; color:#c9a84c; letter-spacing:0.6px; text-transform:uppercase; }}
       .export-legend .row {{ display:flex; align-items:center; gap:8px; margin:5px 0; font-size:12px; }}
       .export-legend .swatch {{ width:12px; height:12px; border-radius:3px; border:1px solid #d9c79a; display:inline-block; }}
@@ -1176,9 +1179,16 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
           <select id="{label_mode_id}">
             <option value="name" selected>Labels: names</option>
             <option value="votes">Labels: votes</option>
+            <option value="name_votes">Labels: name + votes</option>
             <option value="margin_votes">Labels: vote diff</option>
+            <option value="name_margin_votes">Labels: name + vote diff</option>
             <option value="projected_margin">Labels: projected edge</option>
+            <option value="name_projected_margin">Labels: name + projected edge</option>
             <option value="none">Labels: none</option>
+          </select>
+          <select id="{legend_pos_id}">
+            <option value="top_right" selected>Legend: top right</option>
+            <option value="bottom_left">Legend: bottom left</option>
           </select>
           <label><input type="checkbox" id="{labels_id}" checked> Include labels</label>
           <label><input type="checkbox" id="{legend_toggle_id}" checked> Include legend</label>
@@ -1191,7 +1201,7 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
       </div>
       <div class="map-frame">
         <div id="{map_id}"></div>
-        <div class="export-legend" id="{legend_id}"><h4>Legend</h4></div>
+        <div class="export-legend pos-top-right" id="{legend_id}"><h4>Legend</h4></div>
       </div>
     </div>
     <script>
@@ -1204,6 +1214,7 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
       const statusEl = document.getElementById("{status_id}");
       const labelsToggle = document.getElementById("{labels_id}");
       const legendToggle = document.getElementById("{legend_toggle_id}");
+      const legendPosSelect = document.getElementById("{legend_pos_id}");
       const resolutionSelect = document.getElementById("{res_id}");
       const cropSelect = document.getElementById("{crop_id}");
       const labelModeSelect = document.getElementById("{label_mode_id}");
@@ -1229,6 +1240,12 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
         row.innerHTML = `<span class="swatch" style="background:${{entry.color}};border-color:${{entry.stroke}}"></span><span>${{entry.label}}</span>`;
         legendEl.appendChild(row);
       }});
+      function applyLegendPosition() {{
+        legendEl.classList.remove("pos-top-right", "pos-bottom-left");
+        legendEl.classList.add(legendPosSelect.value === "bottom_left" ? "pos-bottom-left" : "pos-top-right");
+      }}
+      applyLegendPosition();
+      legendPosSelect.addEventListener("change", applyLegendPosition);
 
       const featureLayers = [];
       const layer = L.geoJSON(geo, {{
@@ -1304,7 +1321,10 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
       }}
       function buildLegendNode(targetSvg, width, height) {{
         if (!legendToggle.checked) return;
-        const entries = legendEntries(), legendWidth = 220, legendHeight = 32 + entries.length * 24, x = width - legendWidth - 24, y = height - legendHeight - 24;
+        const entries = legendEntries(), legendWidth = 220, legendHeight = 32 + entries.length * 24;
+        const isBottomLeft = legendPosSelect.value === "bottom_left";
+        const x = isBottomLeft ? 24 : width - legendWidth - 24;
+        const y = isBottomLeft ? height - legendHeight - 24 : 24;
         const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
         const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
         rect.setAttribute("x", x); rect.setAttribute("y", y); rect.setAttribute("width", legendWidth); rect.setAttribute("height", legendHeight); rect.setAttribute("rx", 14); rect.setAttribute("fill", "#0b1120"); rect.setAttribute("fill-opacity", "0.94"); rect.setAttribute("stroke", "#2a4060"); g.appendChild(rect);
