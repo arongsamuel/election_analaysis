@@ -1138,6 +1138,7 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
     res_id = f"{map_id}_resolution"
     crop_id = f"{map_id}_crop"
     label_mode_id = f"{map_id}_label_mode"
+    label_density_id = f"{map_id}_label_density"
     legend_pos_id = f"{map_id}_legend_pos"
     labels_id = f"{map_id}_labels"
     legend_toggle_id = f"{map_id}_legend_toggle"
@@ -1161,6 +1162,13 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
       .export-legend .swatch {{ width:12px; height:12px; border-radius:3px; border:1px solid #d9c79a; display:inline-block; }}
       .map-frame {{ position:relative; }}
       .leaflet-tooltip {{ background:#0f1e30; color:#e8e4da; border:1px solid #2a4060; border-radius:8px; box-shadow:none; padding:10px 12px; }}
+      .map-live-label {{ pointer-events:none; }}
+      .map-live-label .label-card {{ background:rgba(8,17,30,0.9); border:1px solid rgba(217,199,154,0.7); border-radius:12px; padding:4px 8px 5px; text-align:center; box-shadow:0 3px 12px rgba(0,0,0,0.28); white-space:nowrap; }}
+      .map-live-label .label-name {{ color:#f3efe6; font-size:12px; font-weight:800; line-height:1.05; text-shadow:0 1px 0 rgba(0,0,0,0.6); }}
+      .map-live-label .label-metric {{ display:inline-block; margin-top:4px; padding:1px 6px 2px; border-radius:999px; font-size:11px; font-weight:800; line-height:1.05; border:1px solid rgba(255,255,255,0.18); }}
+      .map-live-label.compact .label-card {{ padding:3px 6px 4px; border-radius:10px; }}
+      .map-live-label.compact .label-name {{ font-size:11px; }}
+      .map-live-label.compact .label-metric {{ font-size:10px; margin-top:3px; }}
     </style>
     <div class="map-shell" id="{shell_id}">
       <div class="map-toolbar">
@@ -1186,6 +1194,13 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
             <option value="projected_margin">Labels: projected edge</option>
             <option value="name_projected_margin">Labels: name + projected edge</option>
             <option value="none">Labels: none</option>
+          </select>
+          <select id="{label_density_id}">
+            <option value="minimal">Density: minimal</option>
+            <option value="compact" selected>Density: compact</option>
+            <option value="detailed">Density: detailed</option>
+            <option value="battlegrounds">Density: battlegrounds</option>
+            <option value="major">Density: major seats</option>
           </select>
           <select id="{legend_pos_id}">
             <option value="top_right" selected>Legend: top right</option>
@@ -1219,6 +1234,7 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
       const resolutionSelect = document.getElementById("{res_id}");
       const cropSelect = document.getElementById("{crop_id}");
       const labelModeSelect = document.getElementById("{label_mode_id}");
+      const labelDensitySelect = document.getElementById("{label_density_id}");
       const shellEl = document.getElementById("{shell_id}");
       const hasProjectedFlips = Object.values(rows).some(r => !!(r && r["Projected Flip"]));
 
@@ -1249,6 +1265,124 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
       legendPosSelect.addEventListener("change", applyLegendPosition);
 
       const featureLayers = [];
+      const labelLayer = L.layerGroup().addTo(map);
+      function metricColors(row) {{
+        const bloc = (row && row["Top Bloc"]) || "Other";
+        const base = colorMap[bloc] || "#8fa3c0";
+        return {{
+          fill: shadeColor(base, 24),
+          text: "#ffffff",
+          stroke: shadeColor(base, -28),
+        }};
+      }}
+      function splitLabelLines(row, props) {{
+        const name = (row && row["Constituency"]) || props.AC_NAME || "";
+        const mode = labelModeSelect.value;
+        if (mode === "none") return {{ name:"", metric:"", combined:false }};
+        if (mode === "name") return {{ name, metric:"", combined:false }};
+        if (mode === "votes" && row && row["Votes Polled"] != null) return {{ name:"", metric:Math.round(Number(row["Votes Polled"])).toLocaleString(), combined:false }};
+        if (mode === "name_votes" && row && row["Votes Polled"] != null) return {{ name, metric:Math.round(Number(row["Votes Polled"])).toLocaleString(), combined:true }};
+        if (mode === "margin_votes" && row && row["Avg Margin"] != null) return {{ name:"", metric:"+/- " + Math.round(Number(row["Avg Margin"])).toLocaleString(), combined:false }};
+        if (mode === "name_margin_votes" && row && row["Avg Margin"] != null) return {{ name, metric:"+/- " + Math.round(Number(row["Avg Margin"])).toLocaleString(), combined:true }};
+        if (mode === "projected_margin" && row && row["Projected Margin %"] != null) return {{ name:"", metric:Number(row["Projected Margin %"]).toFixed(1) + "%", combined:false }};
+        if (mode === "name_projected_margin" && row && row["Projected Margin %"] != null) return {{ name, metric:Number(row["Projected Margin %"]).toFixed(1) + "%", combined:true }};
+        return {{ name, metric:"", combined:false }};
+      }}
+      function labelPriority(row) {{
+        if (!row) return 0;
+        const votes = row["Votes Polled"] != null ? Number(row["Votes Polled"]) : 0;
+        const margin = row["Projected Margin %"] != null ? Math.abs(Number(row["Projected Margin %"])) : (row["Margin %"] != null ? Math.abs(Number(row["Margin %"])) : 99);
+        const battlegroundBoost = Math.max(0, 16 - Math.min(16, margin));
+        const flipBoost = row["Projected Flip"] ? 60 : 0;
+        const splitBoost = row["Split Leakage %"] != null ? Number(row["Split Leakage %"]) * 0.2 : 0;
+        return flipBoost + battlegroundBoost * 3 + Math.log10(Math.max(votes, 1)) * 8 + splitBoost;
+      }}
+      function densityConfig() {{
+        const zoom = map.getZoom();
+        const density = labelDensitySelect.value;
+        if (density === "minimal") return {{ maxLabels: zoom >= 10 ? 55 : 28, minGap: zoom >= 10 ? 34 : 50, preferCombined:false, css:"compact", leaderLines:false }};
+        if (density === "detailed") return {{ maxLabels: zoom >= 11 ? 140 : (zoom >= 10 ? 105 : 70), minGap: zoom >= 11 ? 16 : (zoom >= 10 ? 22 : 28), preferCombined:true, css:"", leaderLines:true }};
+        if (density === "battlegrounds") return {{ maxLabels: zoom >= 10 ? 45 : 28, minGap: zoom >= 10 ? 26 : 34, preferCombined:true, battlegroundsOnly:true, css:"compact", leaderLines:true }};
+        if (density === "major") return {{ maxLabels: zoom >= 10 ? 40 : 24, minGap: zoom >= 10 ? 28 : 36, preferCombined:true, majorOnly:true, css:"compact", leaderLines:true }};
+        return {{ maxLabels: zoom >= 11 ? 110 : (zoom >= 10 ? 78 : 50), minGap: zoom >= 11 ? 18 : (zoom >= 10 ? 24 : 32), preferCombined:true, css:"compact", leaderLines:true }};
+      }}
+      function estimateLabelBox(lines, point, config) {{
+        const fontMain = config.fontMain || (config.css === "compact" ? 11 : 12);
+        const fontMetric = config.fontMetric || (config.css === "compact" ? 10 : 11);
+        const textWidth = Math.max(
+          lines.name ? lines.name.length * fontMain * 0.62 : 0,
+          lines.metric ? lines.metric.length * fontMetric * 0.6 : 0
+        );
+        const width = Math.max(42, textWidth + 18);
+        const lineCount = (lines.name ? 1 : 0) + (lines.metric ? 1 : 0);
+        const height = lineCount === 2 ? (config.css === "compact" ? 34 : 40) : (lineCount === 1 ? (config.css === "compact" ? 22 : 26) : 0);
+        return {{ left: point.x - width / 2, right: point.x + width / 2, top: point.y - height / 2, bottom: point.y + height / 2, width, height }};
+      }}
+      function intersectsBox(box, boxes, gap) {{
+        return boxes.some((b) => !(box.right + gap < b.left || box.left - gap > b.right || box.bottom + gap < b.top || box.top - gap > b.bottom));
+      }}
+      function candidateOffsets(config) {{
+        return config.leaderLines
+          ? [[0,0],[0,-26],[0,26],[26,0],[-26,0],[22,-20],[-22,-20],[22,20],[-22,20],[34,-30],[-34,-30],[34,30],[-34,30]]
+          : [[0,0],[0,-18],[0,18],[18,0],[-18,0]];
+      }}
+      function renderLiveLabels() {{
+        labelLayer.clearLayers();
+        if (!labelsToggle.checked || labelModeSelect.value === "none") return;
+        const config = densityConfig();
+        let candidates = featureLayers.map(([feature, lyr]) => {{
+          const props = feature.properties || {{}};
+          const row = rows[props.__norm_name];
+          const lines = splitLabelLines(row, props);
+          return {{ feature, lyr, props, row, lines, score: labelPriority(row) }};
+        }}).filter(item => item.lines.name || item.lines.metric);
+        if (config.battlegroundsOnly) {{
+          candidates = candidates.filter(item => item.row && ((item.row["Projected Flip"]) || (item.row["Projected Margin %"] != null && Math.abs(Number(item.row["Projected Margin %"])) <= 6) || (item.row["Margin %"] != null && Math.abs(Number(item.row["Margin %"])) <= 6)));
+        }}
+        if (config.majorOnly) {{
+          candidates = candidates.filter(item => item.row && item.row["Votes Polled"] != null).sort((a, b) => Number(b.row["Votes Polled"]) - Number(a.row["Votes Polled"])).slice(0, 36);
+        }}
+        candidates.sort((a, b) => b.score - a.score);
+        const boxes = [];
+        const offsets = candidateOffsets(config);
+        candidates.slice(0, config.maxLabels * 2).forEach((item) => {{
+          if (boxes.length >= config.maxLabels) return;
+          const center = item.lyr.getBounds().getCenter();
+          const basePoint = map.latLngToContainerPoint(center);
+          if (basePoint.x < -20 || basePoint.y < -20 || basePoint.x > map.getSize().x + 20 || basePoint.y > map.getSize().y + 20) return;
+          let chosen = null;
+          let chosenBox = null;
+          for (const offset of offsets) {{
+            const point = L.point(basePoint.x + offset[0], basePoint.y + offset[1]);
+            const box = estimateLabelBox(item.lines, point, config);
+            if (box.left < 0 || box.top < 0 || box.right > map.getSize().x || box.bottom > map.getSize().y) continue;
+            if (!intersectsBox(box, boxes, config.minGap)) {{
+              chosen = point;
+              chosenBox = box;
+              break;
+            }}
+          }}
+          if (!chosen) return;
+          const colors = metricColors(item.row);
+          const html = `<div class="label-card">${{item.lines.name ? `<div class="label-name">${{item.lines.name}}</div>` : ""}}${{item.lines.metric ? `<div class="label-metric" style="background:${{colors.fill}};color:${{colors.text}};border-color:${{colors.stroke}};">${{item.lines.metric}}</div>` : ""}}</div>`;
+          const icon = L.divIcon({{
+            className: `map-live-label ${{config.css}}`,
+            html,
+            iconSize: null,
+            iconAnchor: [0, 0],
+          }});
+          const marker = L.marker(map.containerPointToLatLng(chosen), {{ icon, interactive:false, keyboard:false }});
+          labelLayer.addLayer(marker);
+          if ((chosen.x !== basePoint.x || chosen.y !== basePoint.y) && config.leaderLines) {{
+            labelLayer.addLayer(L.polyline([
+              center,
+              map.containerPointToLatLng(L.point(chosen.x, chosen.y + (item.lines.name && item.lines.metric ? 14 : 10)))
+            ], {{ color:"#d9c79a", weight:1, opacity:0.65, interactive:false }}));
+          }}
+          boxes.push(chosenBox);
+        }});
+      }}
+
       const layer = L.geoJSON(geo, {{
         style: feature => {{
           const row = rows[feature.properties.__norm_name];
@@ -1289,6 +1423,9 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
         }}
       }}).addTo(map);
       map.fitBounds(layer.getBounds(), {{ padding: [8, 8] }});
+      map.whenReady(renderLiveLabels);
+      map.on("zoomend moveend", renderLiveLabels);
+      [labelsToggle, labelModeSelect, labelDensitySelect].forEach((el) => el.addEventListener("change", renderLiveLabels));
 
       function setStatus(text) {{ statusEl.textContent = text; }}
       function getBoundsForExport() {{
@@ -1346,25 +1483,91 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
         svg.setAttribute("xmlns", "http://www.w3.org/2000/svg"); svg.setAttribute("width", width); svg.setAttribute("height", height); svg.setAttribute("viewBox", `0 0 ${{width}} ${{height}}`);
         const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
         bg.setAttribute("x", 0); bg.setAttribute("y", 0); bg.setAttribute("width", width); bg.setAttribute("height", height); bg.setAttribute("fill", "#102235"); svg.appendChild(bg);
-        const labelGroup = document.createElementNS("http://www.w3.org/2000/svg", "g"), placed = [];
-        const minGap = Math.max(18, Math.round(Math.min(width, height) * 0.014)), fontSize = Math.max(9, Math.round(Math.min(width, height) * 0.0065)), strokeSize = Math.max(1.5, Math.round(fontSize * 0.18));
+        const labelGroup = document.createElementNS("http://www.w3.org/2000/svg", "g"), leaderGroup = document.createElementNS("http://www.w3.org/2000/svg", "g"), placed = [];
+        const density = densityConfig();
+        const exportDensity = {{ ...density }};
+        const scale = Math.min(width, height) / 2400;
+        const fontSize = Math.max(10, Math.round((density.css === "compact" ? 11 : 12) * scale));
+        const metricFontSize = Math.max(9, Math.round((density.css === "compact" ? 10 : 11) * scale));
+        exportDensity.fontMain = fontSize;
+        exportDensity.fontMetric = metricFontSize;
+        const minGap = Math.max(20, Math.round(density.minGap * scale * 0.85));
+        const strokeSize = Math.max(1.6, Math.round(fontSize * 0.16));
+        const offsets = candidateOffsets(density).map(([x, y]) => [x * scale * 0.9, y * scale * 0.9]);
         (geo.features || []).forEach((feature) => {{
           const props = feature.properties || {{}}, row = rows[props.__norm_name], baseColor = colorMap[(row && row["Top Bloc"]) || "Other"] || fallbackColor, isFlip = !!(row && row["Projected Flip"]);
           const d = featurePathString(feature, bounds, width, height, padding);
           if (!d) return;
           const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
           path.setAttribute("d", d); path.setAttribute("fill", isFlip ? shadeColor(baseColor, 38) : baseColor); path.setAttribute("fill-opacity", row ? "0.82" : "0.22"); path.setAttribute("stroke", isFlip ? "#fff4cf" : "#d9c79a"); path.setAttribute("stroke-width", isFlip ? "1.4" : "0.9"); svg.appendChild(path);
-          if (!labelsToggle.checked || labelModeSelect.value === "none") return;
-          const fl = featureLayers.find(([f]) => ((f.properties || {{}}).__norm_name === props.__norm_name));
-          if (!fl) return;
-          const c = fl[1].getBounds().getCenter(), pt = projectPoint(c.lng, c.lat, bounds, width, height, padding);
-          if (pt[0] < 0 || pt[0] > width || pt[1] < 0 || pt[1] > height) return;
-          if (placed.some(([x, y]) => Math.hypot(x - pt[0], y - pt[1]) < minGap)) return;
-          const label = labelTextForRow(row, props);
-          if (!label) return;
-          const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
-          text.setAttribute("x", pt[0]); text.setAttribute("y", pt[1]); text.setAttribute("fill", "#f3efe6"); text.setAttribute("font-size", String(fontSize)); text.setAttribute("font-weight", "700"); text.setAttribute("text-anchor", "middle"); text.setAttribute("paint-order", "stroke"); text.setAttribute("stroke", "#0b1120"); text.setAttribute("stroke-width", String(strokeSize)); text.setAttribute("font-family", "DM Sans, sans-serif"); text.textContent = label; labelGroup.appendChild(text); placed.push(pt);
         }});
+        if (labelsToggle.checked && labelModeSelect.value !== "none") {{
+          let candidates = featureLayers.map(([feature, lyr]) => {{
+            const props = feature.properties || {{}};
+            const row = rows[props.__norm_name];
+            const lines = splitLabelLines(row, props);
+            return {{ feature, lyr, props, row, lines, score: labelPriority(row) }};
+          }}).filter(item => item.lines.name || item.lines.metric);
+          if (density.battlegroundsOnly) {{
+            candidates = candidates.filter(item => item.row && ((item.row["Projected Flip"]) || (item.row["Projected Margin %"] != null && Math.abs(Number(item.row["Projected Margin %"])) <= 6) || (item.row["Margin %"] != null && Math.abs(Number(item.row["Margin %"])) <= 6)));
+          }}
+          if (density.majorOnly) {{
+            candidates = candidates.filter(item => item.row && item.row["Votes Polled"] != null).sort((a, b) => Number(b.row["Votes Polled"]) - Number(a.row["Votes Polled"])).slice(0, 36);
+          }}
+          candidates.sort((a, b) => b.score - a.score);
+          candidates.slice(0, density.maxLabels * 2).forEach((item) => {{
+            if (placed.length >= density.maxLabels) return;
+            const c = item.lyr.getBounds().getCenter();
+            const basePoint = {{ x: projectPoint(c.lng, c.lat, bounds, width, height, padding)[0], y: projectPoint(c.lng, c.lat, bounds, width, height, padding)[1] }};
+            if (basePoint.x < 0 || basePoint.x > width || basePoint.y < 0 || basePoint.y > height) return;
+            let chosen = null;
+            let chosenBox = null;
+            for (const offset of offsets) {{
+              const point = {{ x: basePoint.x + offset[0], y: basePoint.y + offset[1] }};
+              const box = estimateLabelBox(item.lines, point, exportDensity);
+              if (box.left < 0 || box.top < 0 || box.right > width || box.bottom > height) continue;
+              if (!intersectsBox(box, placed, minGap)) {{
+                chosen = point;
+                chosenBox = box;
+                break;
+              }}
+            }}
+            if (!chosen) return;
+            const colors = metricColors(item.row);
+            if (chosen.x !== basePoint.x || chosen.y !== basePoint.y) {{
+              const leader = document.createElementNS("http://www.w3.org/2000/svg", "line");
+              leader.setAttribute("x1", basePoint.x); leader.setAttribute("y1", basePoint.y);
+              leader.setAttribute("x2", chosen.x); leader.setAttribute("y2", chosen.y + (item.lines.name && item.lines.metric ? 10 * scale : 6 * scale));
+              leader.setAttribute("stroke", "#d9c79a"); leader.setAttribute("stroke-width", Math.max(1, 1.1 * scale)); leader.setAttribute("stroke-opacity", "0.7");
+              leaderGroup.appendChild(leader);
+            }}
+            const card = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+            card.setAttribute("x", chosenBox.left); card.setAttribute("y", chosenBox.top); card.setAttribute("width", chosenBox.width); card.setAttribute("height", chosenBox.height);
+            card.setAttribute("rx", Math.max(8, 10 * scale)); card.setAttribute("fill", "rgba(8,17,30,0.9)"); card.setAttribute("stroke", "rgba(217,199,154,0.72)");
+            labelGroup.appendChild(card);
+            if (item.lines.name) {{
+              const nameText = document.createElementNS("http://www.w3.org/2000/svg", "text");
+              nameText.setAttribute("x", chosen.x); nameText.setAttribute("y", chosen.y + (item.lines.metric ? -3 * scale : 4 * scale));
+              nameText.setAttribute("fill", "#f3efe6"); nameText.setAttribute("font-size", String(fontSize)); nameText.setAttribute("font-weight", "800"); nameText.setAttribute("text-anchor", "middle");
+              nameText.setAttribute("paint-order", "stroke"); nameText.setAttribute("stroke", "#0b1120"); nameText.setAttribute("stroke-width", String(strokeSize)); nameText.setAttribute("font-family", "DM Sans, sans-serif");
+              nameText.textContent = item.lines.name; labelGroup.appendChild(nameText);
+            }}
+            if (item.lines.metric) {{
+              const metricWidth = Math.max(34, item.lines.metric.length * metricFontSize * 0.64 + 12);
+              const pill = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+              pill.setAttribute("x", chosen.x - metricWidth / 2); pill.setAttribute("y", chosen.y + (item.lines.name ? 3 * scale : -8 * scale));
+              pill.setAttribute("width", metricWidth); pill.setAttribute("height", Math.max(16, 18 * scale)); pill.setAttribute("rx", Math.max(7, 9 * scale));
+              pill.setAttribute("fill", colors.fill); pill.setAttribute("stroke", colors.stroke); pill.setAttribute("stroke-width", Math.max(1, 0.9 * scale));
+              labelGroup.appendChild(pill);
+              const metricText = document.createElementNS("http://www.w3.org/2000/svg", "text");
+              metricText.setAttribute("x", chosen.x); metricText.setAttribute("y", chosen.y + (item.lines.name ? 15 * scale : 5 * scale));
+              metricText.setAttribute("fill", colors.text); metricText.setAttribute("font-size", String(metricFontSize)); metricText.setAttribute("font-weight", "800"); metricText.setAttribute("text-anchor", "middle"); metricText.setAttribute("font-family", "DM Sans, sans-serif");
+              metricText.textContent = item.lines.metric; labelGroup.appendChild(metricText);
+            }}
+            placed.push(chosenBox);
+          }});
+        }}
+        if (leaderGroup.childNodes.length) svg.appendChild(leaderGroup);
         if (labelGroup.childNodes.length) svg.appendChild(labelGroup);
         buildLegendNode(svg, width, height);
         return {{ svg, width, height }};
