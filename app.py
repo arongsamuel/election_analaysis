@@ -1138,6 +1138,7 @@ def render_kerala_constituency_map(map_df, geojson, map_key=None):
     res_id = f"{map_id}_resolution"
     crop_id = f"{map_id}_crop"
     label_mode_id = f"{map_id}_label_mode"
+    legend_pos_id = f"{map_id}_legend_pos"
     labels_id = f"{map_id}_labels"
     legend_toggle_id = f"{map_id}_legend_toggle"
     html_block = f"""
