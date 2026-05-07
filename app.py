@@ -1777,6 +1777,244 @@ Columns: {list(df.columns)}\nSample:\n{sample}\nUSER: {query}"""
             p += f"\nError: {e}. Fix."
     return None, None, "Failed."
 
+
+def extract_years_from_prompt(prompt, available_years):
+    found = []
+    seen = set()
+    for token in re.findall(r"\b(19\d{2}|20\d{2})\b", str(prompt)):
+        year = int(token)
+        if year in available_years and year not in seen:
+            found.append(year)
+            seen.add(year)
+    return found
+
+
+def build_year_comparison_payload(df, year_a, year_b):
+    cc = smart_col(df, "Constituency Name")
+    wc = smart_col(df, "Win Party")
+    wa = smart_col(df, "Win Alliance")
+    mg = smart_col(df, "Margin")
+    tv = smart_col(df, "Votes Polled")
+    if cc not in df.columns or wc not in df.columns:
+        return None
+
+    def seat_frame(year):
+        sub = df[df["Year"] == year].copy()
+        if sub.empty:
+            return None
+        cols = [cc, wc]
+        for col in [wa, mg, tv]:
+            if col in sub.columns and col not in cols:
+                cols.append(col)
+        sub = sub[cols].copy()
+        sub = sub[sub[cc].notna()].copy()
+        sub["Constituency"] = sub[cc].astype(str).str.strip()
+        if wa in sub.columns:
+            sub["Bloc"] = sub[wa].astype(str).apply(assign_bloc)
+        else:
+            sub["Bloc"] = sub[wc].astype(str).apply(assign_bloc)
+        if mg in sub.columns and tv in sub.columns:
+            sub["Margin %"] = (to_num(sub[mg]) / to_num(sub[tv]) * 100).replace([np.inf, -np.inf], np.nan)
+        else:
+            sub["Margin %"] = np.nan
+        first_agg = {
+            wc: "first",
+            "Bloc": "first",
+            "Margin %": "first",
+        }
+        if mg in sub.columns:
+            first_agg[mg] = "first"
+        if tv in sub.columns:
+            first_agg[tv] = "first"
+        sub = sub.sort_values("Constituency").groupby("Constituency", as_index=False).agg(first_agg)
+        rename_map = {
+            wc: f"Win Party {year}",
+            "Bloc": f"Bloc {year}",
+            "Margin %": f"Margin % {year}",
+        }
+        if mg in sub.columns:
+            rename_map[mg] = f"Margin {year}"
+        if tv in sub.columns:
+            rename_map[tv] = f"Votes Polled {year}"
+        return sub.rename(columns=rename_map)
+
+    left = seat_frame(year_a)
+    right = seat_frame(year_b)
+    if left is None or right is None:
+        return None
+
+    merged = left.merge(right, on="Constituency", how="outer", indicator=True)
+    matched = merged[merged["_merge"] == "both"].copy()
+    if matched.empty:
+        return None
+
+    matched["Party Shifted"] = matched[f"Win Party {year_a}"] != matched[f"Win Party {year_b}"]
+    matched["Bloc Shifted"] = matched[f"Bloc {year_a}"] != matched[f"Bloc {year_b}"]
+    matched["Closer Contest"] = matched[[f"Margin % {year_a}", f"Margin % {year_b}"]].min(axis=1)
+
+    seat_counts_a = matched[f"Bloc {year_a}"].value_counts().reindex(["LDF", "UDF", "NDA", "Other"], fill_value=0)
+    seat_counts_b = matched[f"Bloc {year_b}"].value_counts().reindex(["LDF", "UDF", "NDA", "Other"], fill_value=0)
+    net_change = (seat_counts_b - seat_counts_a).sort_values(ascending=False)
+
+    party_switches = (
+        matched[matched["Party Shifted"]]
+        .groupby([f"Win Party {year_a}", f"Win Party {year_b}"])
+        .size()
+        .reset_index(name="Seats")
+        .sort_values("Seats", ascending=False)
+    )
+    bloc_switches = (
+        matched[matched["Bloc Shifted"]]
+        .groupby([f"Bloc {year_a}", f"Bloc {year_b}"])
+        .size()
+        .reset_index(name="Seats")
+        .sort_values("Seats", ascending=False)
+    )
+    shifted = matched[matched["Party Shifted"]].copy()
+    shifted = shifted.sort_values([f"Margin % {year_b}", "Constituency"], key=lambda s: s.abs() if s.name == f"Margin % {year_b}" else s)
+
+    return {
+        "year_a": year_a,
+        "year_b": year_b,
+        "matched": matched,
+        "shifted": shifted,
+        "seat_counts_a": seat_counts_a,
+        "seat_counts_b": seat_counts_b,
+        "net_change": net_change,
+        "party_switches": party_switches,
+        "bloc_switches": bloc_switches,
+    }
+
+
+def make_year_comparison_figure(payload):
+    year_a = payload["year_a"]
+    year_b = payload["year_b"]
+    seat_counts_a = payload["seat_counts_a"]
+    seat_counts_b = payload["seat_counts_b"]
+    shifted = payload["shifted"]
+    bloc_switches = payload["bloc_switches"].copy()
+    matched = payload["matched"]
+
+    fig = plt.figure(figsize=(14, 8))
+    gs = fig.add_gridspec(2, 2, height_ratios=[1, 1.15], width_ratios=[1.1, 0.9], hspace=0.32, wspace=0.22)
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax3 = fig.add_subplot(gs[1, :])
+
+    fig.patch.set_facecolor(DARK_BG)
+    for ax in [ax1, ax2, ax3]:
+        ax.set_facecolor(CARD_BG)
+        ax.tick_params(colors=MUTED)
+        for spine in ax.spines.values():
+            spine.set_color("#2a4060")
+
+    blocs = ["LDF", "UDF", "NDA", "Other"]
+    x = np.arange(len(blocs))
+    width = 0.36
+    ax1.bar(x - width / 2, [seat_counts_a.get(b, 0) for b in blocs], width=width, color=[BLOC_COLORS[b] for b in blocs], alpha=0.55, label=str(year_a))
+    ax1.bar(x + width / 2, [seat_counts_b.get(b, 0) for b in blocs], width=width, color=[BLOC_COLORS[b] for b in blocs], alpha=0.95, label=str(year_b))
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(blocs, color=TEXT_MAIN)
+    ax1.set_ylabel("Seats", color=MUTED)
+    ax1.set_title(f"Bloc Seat Comparison: {year_a} vs {year_b}", color=GOLD, fontsize=14, pad=10)
+    ax1.legend(facecolor=CARD_BG, edgecolor="#2a4060", labelcolor=TEXT_MAIN)
+    ax1.grid(axis="y", alpha=0.18)
+
+    held_count = int((~matched["Party Shifted"]).sum())
+    shifted_count = int(matched["Party Shifted"].sum())
+    pie_colors = ["#355c7d", GOLD]
+    wedges, texts, autotexts = ax2.pie(
+        [held_count, shifted_count],
+        labels=["Held", "Shifted"],
+        autopct="%1.0f",
+        startangle=90,
+        colors=pie_colors,
+        wedgeprops={"edgecolor": DARK_BG, "linewidth": 2},
+        textprops={"color": TEXT_MAIN, "fontsize": 11},
+    )
+    for at in autotexts:
+        at.set_color(DARK_BG)
+        at.set_fontweight("bold")
+    ax2.set_title(f"Constituencies Changing Winner\n{year_a} to {year_b}", color=GOLD, fontsize=14, pad=10)
+
+    if bloc_switches.empty:
+        ax3.text(0.5, 0.5, "No bloc-level seat changes", ha="center", va="center", color=TEXT_MAIN, fontsize=13)
+        ax3.set_axis_off()
+    else:
+        top_switch = bloc_switches.head(10).copy()
+        top_switch["Transition"] = top_switch[f"Bloc {year_a}"] + " → " + top_switch[f"Bloc {year_b}"]
+        colors = [BLOC_COLORS.get(dest, "#888") for dest in top_switch[f"Bloc {year_b}"]]
+        bars = ax3.barh(top_switch["Transition"][::-1], top_switch["Seats"][::-1], color=colors[::-1], alpha=0.9)
+        ax3.bar_label(bars, fmt="%d", padding=4, color=TEXT_MAIN, fontsize=10)
+        ax3.set_xlabel("Seats", color=MUTED)
+        ax3.set_title("Largest Bloc Transitions Between Elections", color=GOLD, fontsize=14, pad=10)
+        ax3.grid(axis="x", alpha=0.18)
+
+    plt.tight_layout()
+    return fig
+
+
+def maybe_answer_year_comparison(prompt, df):
+    available_years = sorted(int(y) for y in df["Year"].dropna().unique())
+    years = extract_years_from_prompt(prompt, available_years)
+    pl = str(prompt).lower()
+    compare_words = ["compare", "shift", "changed", "change", "swing", "switched", "winner", "won", "gain", "lost"]
+    if len(years) < 2 or not any(word in pl for word in compare_words):
+        return None
+
+    year_a, year_b = years[0], years[1]
+    payload = build_year_comparison_payload(df, year_a, year_b)
+    if payload is None:
+        return None
+
+    shifted = payload["shifted"]
+    matched = payload["matched"]
+    seat_counts_a = payload["seat_counts_a"]
+    seat_counts_b = payload["seat_counts_b"]
+    net_change = payload["net_change"]
+    bloc_switches = payload["bloc_switches"]
+    party_switches = payload["party_switches"]
+
+    lead_a = seat_counts_a.idxmax() if int(seat_counts_a.max()) > 0 else "Other"
+    lead_b = seat_counts_b.idxmax() if int(seat_counts_b.max()) > 0 else "Other"
+    net_bits = []
+    for bloc in ["UDF", "LDF", "NDA", "Other"]:
+        delta = int(net_change.get(bloc, 0))
+        if delta == 0:
+            continue
+        net_bits.append(f"{bloc} {'gained' if delta > 0 else 'lost'} {abs(delta)}")
+    top_switch_text = ""
+    if not bloc_switches.empty:
+        top_switch = bloc_switches.iloc[0]
+        top_switch_text = f" The biggest bloc transition was {top_switch[f'Bloc {year_a}']} to {top_switch[f'Bloc {year_b}']} in {int(top_switch['Seats'])} constituencies."
+
+    seat_line = f"In {year_a}, {lead_a} led with {int(seat_counts_a.get(lead_a, 0))} seats; in {year_b}, {lead_b} led with {int(seat_counts_b.get(lead_b, 0))} seats."
+    shift_line = f"{int(shifted.shape[0])} of {int(matched.shape[0])} matched constituencies changed winning party between {year_a} and {year_b}."
+    net_line = (" Net seat movement: " + ", ".join(net_bits) + ".") if net_bits else ""
+    examples = shifted["Constituency"].head(12).tolist()
+    example_line = f" Example shifted seats: {', '.join(examples)}." if examples else ""
+
+    narration = seat_line + " " + shift_line + net_line + top_switch_text + example_line
+    result_value = narration
+    if not party_switches.empty:
+        top_party_moves = [
+            f"{row[f'Win Party {year_a}']}→{row[f'Win Party {year_b}']} ({int(row['Seats'])})"
+            for _, row in party_switches.head(4).iterrows()
+        ]
+        result_value += " Top party switches: " + ", ".join(top_party_moves) + "."
+
+    fig = make_year_comparison_figure(payload)
+    plot_bytes = save_fig_hd(fig, f"compare_{year_a}_{year_b}")
+    store_plot(fig, f"ai_compare_{year_a}_{year_b}")
+    plt.close(fig)
+
+    code_used = (
+        f"Deterministic constituency join for {year_a} vs {year_b}: "
+        f"group by cleaned constituency name, compare winning party and bloc, "
+        f"then chart bloc seats, held-vs-shifted seats, and largest bloc transitions."
+    )
+    return narration, plot_bytes, code_used, result_value
+
 # ─────────────────────────────────────────────
 # 8. PAGE RENDERERS
 # ─────────────────────────────────────────────
@@ -2947,6 +3185,18 @@ def page_ai(df):
         prompt = st.session_state.ai_pending
         st.session_state.ai_pending = None
 
+        direct_compare = maybe_answer_year_comparison(prompt, df)
+        if direct_compare:
+            narration, plot_bytes, code_used, result_value = direct_compare
+            st.session_state.ai_messages.append({"role":"assistant","content":narration})
+            st.session_state.ai_plots.append(plot_bytes)
+            st.session_state.ai_codes.append(code_used)
+            st.session_state.ai_conv_summary = (
+                f"Compared {extract_years_from_prompt(prompt, sorted(df['Year'].dropna().unique()))[:2]} using deterministic constituency joins. "
+                + narration[:220]
+            )
+            st.rerun()
+
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-2.5-flash-lite')
 
@@ -3038,7 +3288,9 @@ def page_ai(df):
                     f"3. Apply dark theme: fig.patch.set_facecolor('#0b1120'); ax.set_facecolor('#0f1e30'); "
                     f"ax.tick_params(colors='#8fa3c0'); ax.title.set_color('#c9a84c').\n"
                     f"4. Draw the {chosen_chart} chart on ax.\n"
-                    f"5. Set result=<one-line string summary of key finding>.\n"
+                    f"5. Keep the chart useful: prefer top-N views for long category lists, rotate labels if needed, "
+                    f"avoid dumping long constituency lists into the plot area, and never use a single giant bar when a grouped or ranked chart is clearer.\n"
+                    f"6. Set result=<one-line string summary of key finding>.\n"
                     f"DO NOT print. DO NOT use st.*. Return ONLY Python, no markdown."
                 )
             else:
