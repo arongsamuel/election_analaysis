@@ -2840,22 +2840,47 @@ def page_ai(df):
     el = smart_col(df,"Electors");  mg = smart_col(df,"Margin")
     cc = smart_col(df,"Constituency Name")
     years = sorted(df['Year'].unique())
+    latest_year = fmt_year(max(years)) if years else "NA"
+    year_span = f"{fmt_year(min(years))}–{latest_year}" if years else "NA"
+    year_list = ", ".join(fmt_year(y) for y in years[-6:]) if years else ""
+    dataset_signature = "|".join([
+        str(len(df)),
+        year_span,
+        str(df["Year"].nunique()) if "Year" in df.columns else "0",
+        str(df[cc].nunique()) if cc in df.columns else "0",
+    ])
     top5 = dict(df[wc].value_counts().head(5)) if wc in df.columns else {}
     yr_v  = {str(k): f"{v/1e6:.1f}M" for k,v in
              pd.to_numeric(df[tv], errors='coerce').groupby(df['Year']).sum().items()} if tv in df.columns else {}
     DATA_CONTEXT = (
-        f"Kerala Assembly Elections {fmt_year(min(years))}–{fmt_year(max(years))}. "
-        f"Cols:{list(df.columns)}. "
-        f"Top parties:{top5}. "
-        f"Votes/yr:{yr_v}. "
+        f"Kerala Assembly Elections {year_span}. "
+        f"Latest election year in this loaded dataset is {latest_year}. "
+        f"Available years include {year_list}. "
+        f"Rows:{len(df):,}. "
+        + (f"Unique constituencies:{df[cc].nunique()}. " if cc in df.columns else "")
+        + f"Cols:{list(df.columns)}. "
+        + f"Top parties:{top5}. "
+        + f"Votes/yr:{yr_v}. "
         + (f"Margin mean/min/max:{to_num(df[mg]).mean():.0f}/{to_num(df[mg]).min():.0f}/{to_num(df[mg]).max():.0f}." if mg in df.columns else "")
     )
 
     # ── Session state init ───────────────────────────────────────────────
     for key, val in [("ai_messages",[]), ("ai_plots",[]), ("ai_codes",[]),
-                     ("ai_conv_summary",""), ("ai_pending",None)]:
+                     ("ai_conv_summary",""), ("ai_pending",None), ("ai_dataset_signature","")] :
         if key not in st.session_state:
             st.session_state[key] = val
+
+    if st.session_state.ai_dataset_signature != dataset_signature:
+        st.session_state.ai_messages = []
+        st.session_state.ai_plots = []
+        st.session_state.ai_codes = []
+        st.session_state.ai_pending = None
+        st.session_state.ai_conv_summary = (
+            f"Current dataset spans Kerala Assembly elections {year_span}. "
+            f"Latest year available is {latest_year}. "
+            f"Use 2026 as completed election data if asked about the most recent election."
+        )
+        st.session_state.ai_dataset_signature = dataset_signature
 
     # ── Suggested questions (shown only at start) ────────────────────────
     suggestions = [
@@ -3003,6 +3028,7 @@ def page_ai(df):
                     f"Kerala election df. {DATA_CONTEXT}\nCols:{list(df.columns)}\n"
                     + (f"Prior context:{conv_summary}\n" if conv_summary else "")
                     + f"Task:{prompt}\n\n"
+                    f"Treat the latest loaded year as actual data, not a forecast, unless the user explicitly asks for a projection.\n"
                     f"YOU MUST create a matplotlib figure. This is mandatory — DO NOT skip it.\n"
                     f"Chart type REQUIRED: {chosen_chart}\n"
                     f"Boilerplate to start with:\n{CHART_SPECS[chosen_chart]}\n\n"
@@ -3020,6 +3046,7 @@ def page_ai(df):
                     f"Kerala election df. {DATA_CONTEXT}\nCols:{list(df.columns)}\n"
                     + (f"Prior context:{conv_summary}\n" if conv_summary else "")
                     + f"Task:{prompt}\n"
+                    f"Treat the latest loaded year as actual data, not a forecast, unless the user explicitly asks for a projection.\n"
                     f"Rules: smart_get(df,'Col') returns Series. Store answer in result (str≤200).\n"
                     f"No fig needed. No print/st. Return ONLY Python."
                 )
@@ -3117,6 +3144,7 @@ def page_ai(df):
             thinking.update(label="✍️ Writing response…")
             narrate_prompt = (
                 f"Kerala election expert. 2-4 prose sentences. Specific numbers. No bullets/markdown.\n"
+                f"The latest loaded year is actual data, not a forecast, unless the user explicitly asked for a projection.\n"
                 + (f"Conv context:{conv_summary}\n" if conv_summary else "")
                 + f"Q:{prompt}\nResult:{result_value or '(see chart)'}\n"
                 + (f"A {chosen_chart} chart was generated. Do NOT describe what it would show — it IS shown." if plot_bytes
